@@ -5,8 +5,10 @@ name: tact-notify
 # 永続化する(リポジトリにはコミットしない=個人の受講情報を公開しない)。
 on:
   schedule:
-    - cron: "*/10 * * * *" # check: 10分ごと(GitHubのcronは数分〜遅延することあり)
-    - cron: "0 22 * * *" # daily digest: 22:00 UTC = 07:00 JST
+    # 10分間隔だが「毎時ちょうど」の混雑を避けてオフセット(発火率UP)。GitHubのcronは
+    # ベストエフォートで数分〜遅延・まれにスキップする(仕様)。
+    - cron: "3,13,23,33,43,53 * * * *" # check: 約10分ごと
+    - cron: "2 22 * * *" # daily digest: 約07:02 JST(22:02 UTC)
   workflow_dispatch:
     inputs:
       mode:
@@ -45,7 +47,7 @@ jobs:
       - name: Decide mode
         id: mode
         run: |
-          if [ "${{ github.event.schedule }}" = "0 22 * * *" ]; then
+          if [ "${{ github.event.schedule }}" = "2 22 * * *" ]; then
             echo "mode=daily" >> "$GITHUB_OUTPUT"
           else
             echo "mode=${{ github.event.inputs.mode || 'check' }}" >> "$GITHUB_OUTPUT"
