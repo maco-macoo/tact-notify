@@ -1,0 +1,75 @@
+name: tact-notify
+
+# 本番はGitHub Actions(PCの電源状態に依存せず常時稼働、Publicリポジトリなので実行分は無料)。
+# check は10分ごと、daily は毎朝7:00 JST。通知済みID(state)とセッションはActionsキャッシュで
+# 永続化する(リポジトリにはコミットしない=個人の受講情報を公開しない)。
+on:
+  schedule:
+    - cron: "*/10 * * * *" # check: 10分ごと(GitHubのcronは数分〜遅延することあり)
+    - cron: "0 22 * * *" # daily digest: 22:00 UTC = 07:00 JST
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [check, daily]
+        default: check
+
+concurrency:
+  group: tact-state
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('uv.lock') }}
+      - run: uv run playwright install --with-deps chromium
+      # 通知済みID(state/)とセッションクッキー(.runtime/)を実行間で保持。
+      # ローテーションキー + プレフィックス復元で「書き換え可能なキャッシュ」にする。
+      - name: Restore state & session
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            state
+            .runtime
+          key: tact-state-${{ github.run_id }}
+          restore-keys: tact-state-
+      - name: Decide mode
+        id: mode
+        run: |
+          if [ "${{ github.event.schedule }}" = "0 22 * * *" ]; then
+            echo "mode=daily" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=${{ github.event.inputs.mode || 'check' }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run ${{ steps.mode.outputs.mode }}
+        env:
+          MS_EMAIL: ${{ secrets.MS_EMAIL }}
+          MS_PASSWORD: ${{ secrets.MS_PASSWORD }}
+          MS_TOTP_SECRET: ${{ secrets.MS_TOTP_SECRET }}
+          SLACK_WEBHOOK_NOTIFY: ${{ secrets.SLACK_WEBHOOK_NOTIFY }}
+          SLACK_WEBHOOK_DIGEST: ${{ secrets.SLACK_WEBHOOK_DIGEST }}
+        run: uv run python -m tact_notify ${{ steps.mode.outputs.mode }}
+      - name: Save state & session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            state
+            .runtime
+          key: tact-state-${{ github.run_id }}
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: login-artifacts-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: ignore

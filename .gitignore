@@ -1,0 +1,19 @@
+# credentials — never commit
+.env
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# generated at runtime by this tool (never commit):
+# artifacts/  = login-failure screenshots
+# probe_out/  = `probe` command API dumps
+# .runtime/   = cached login session cookie
+# state/      = notified-ID store (persisted via Actions cache instead)
+# logs/       = local run logs
+artifacts/
+probe_out/
+.runtime/
+state/
+logs/

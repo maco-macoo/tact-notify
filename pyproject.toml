@@ -1,0 +1,20 @@
+[project]
+name = "tact-notify"
+version = "0.1.0"
+description = "TACT (Sakai LMS) → Slack notifier: new assignments/announcements + daily pending-assignment digest"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "playwright>=1.61.0",
+    "pyotp>=2.10.0",
+    "python-dotenv>=1.2.2",
+    "tzdata>=2026.3",
+]
+
+[project.scripts]
+tact-notify = "tact_notify.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.10.9,<0.11.0"]
+build-backend = "uv_build"
