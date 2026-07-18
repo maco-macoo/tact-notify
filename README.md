@@ -69,3 +69,7 @@ GitHub Actions (cron)
 ```
 
 通知対象は通常の講義サイト（`site.type == "course"`）のみ。取得できる時刻や提出状況などのフィールド仕様は `uv run python -m tact_notify probe` で実データを確認できる。
+
+## ライセンス
+
+[MIT License](LICENSE)
