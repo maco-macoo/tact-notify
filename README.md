@@ -5,7 +5,9 @@
 - **新着通知**（10分ごと）: 新しく公開された課題・小テスト（公開日時・締切日時つき）とお知らせを通知
 - **未提出まとめ**（毎朝7:00 JST）: 未提出かつ締切前の課題・小テストを、締切が早い順で通知
 
-GitHub Actions 上で自動実行され、PCの電源に依存しない。同じ項目が二度通知されることはない（通知済みIDを記録し、新着の差分だけ送る）。通知済みIDやログインセッションは Actions のキャッシュに保持し、リポジトリには一切コミットしない。
+処理は GitHub Actions 上で実行され（Publicリポジトリなので無料）、PCの電源に依存しない。同じ項目が二度通知されることはない（通知済みIDを記録し、新着の差分だけ送る）。通知済みIDやログインセッションは Actions のキャッシュに保持し、リポジトリには一切コミットしない。
+
+> **起動方法について**: GitHubの `schedule`（cron）は新規リポジトリで発火しない/大幅に遅延することがあるため、本ツールは外部スケジューラ（[cron-job.org](https://cron-job.org) など）から GitHub API 経由で `workflow_dispatch` を叩いて起動する方式にしている（[セットアップ](#定期実行のセットアップ外部cron)参照）。
 
 ## スクレイピングについて
 
@@ -27,8 +29,27 @@ TACT公式ヘルプ[「スクレイピングツールを利用したい」](http
    | `SLACK_WEBHOOK_NOTIFY` | 新着通知チャンネルの Incoming Webhook URL |
    | `SLACK_WEBHOOK_DIGEST` | 未提出まとめチャンネルの Incoming Webhook URL |
 3. **Actions** タブでワークフローを有効化する
+4. 下記「定期実行のセットアップ」で外部スケジューラから定期起動を設定する
 
-これで `check`（10分ごと）と `daily`（毎朝7:00 JST）が自動実行される。初回は既存の課題・お知らせを記録するだけで通知は出ない（以後の新着から通知）。
+初回実行では既存の課題・お知らせを記録するだけで通知は出ない（以後の新着から通知）。手動で試すには Actions タブの「Run workflow」、または `gh workflow run notify.yml -f mode=check`。
+
+## 定期実行のセットアップ（外部cron）
+
+GitHubの `schedule` に頼らず、外部スケジューラから `workflow_dispatch` を叩いて確実に起動する。
+
+**1. GitHubトークン（fine-grained PAT）を発行**
+- https://github.com/settings/personal-access-tokens/new
+- Repository access: **Only select repositories → 自分の tact-notify**
+- Permissions → Repository permissions → **Actions: Read and write**
+- 生成した `github_pat_...` を控える（Actions起動専用。Secretsやコードには触れない権限）
+
+**2. cron-job.org（無料）でジョブを2つ作成**
+- 共通:
+  - URL: `https://api.github.com/repos/<自分>/tact-notify/actions/workflows/notify.yml/dispatches`
+  - Method: `POST`
+  - Headers: `Accept: application/vnd.github+json` / `Authorization: Bearer <PAT>` / `X-GitHub-Api-Version: 2022-11-28` / `Content-Type: application/json`
+- ジョブA（新着チェック）: 10分ごと / Body `{"ref":"main","inputs":{"mode":"check"}}`
+- ジョブB（未提出まとめ）: 毎日 07:00 JST / Body `{"ref":"main","inputs":{"mode":"daily"}}`
 
 ### TOTP秘密鍵の取得
 
