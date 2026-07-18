@@ -66,10 +66,6 @@ jobs:
             state
             .runtime
           key: tact-state-${{ github.run_id }}
-      - name: Upload failure artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: login-artifacts-${{ github.run_id }}
-          path: artifacts/
-          if-no-files-found: ignore
+      # 失敗時のスクリーンショット/HTMLは runner 上に残るだけで、アップロードしない。
+      # Publicリポジトリのアーティファクトは誰でもDL可能で、ログイン画面のメール等が
+      # マスクされず露出するため。失敗の把握はSlackアラート(失敗種別つき)で行う。
