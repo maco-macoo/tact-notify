@@ -10,7 +10,7 @@ from .sakai import (
     fetch_assignments,
     fetch_quizzes,
     fetch_site_titles,
-    fetch_submitted_quiz_titles,
+    fetch_submitted_quizzes,
 )
 from .session import open_session
 
@@ -46,19 +46,22 @@ def run(dry_run: bool = False) -> None:
 
 def _mark_submitted_quizzes(client, quizzes: list, now: datetime) -> None:
     """Flip submitted=True for quizzes listed under 提出済みテスト on the
-    Samigo tool page (matched by title within the site). Only sites with a
-    quiz that could reach the digest are scraped, to keep requests down."""
+    Samigo tool page. Matched by publishedId when the row exposes one, by
+    title within the site otherwise (published titles are unique per site).
+    Only sites with a quiz that could reach the digest are scraped, to keep
+    requests down."""
     sites = {
         q.site_id
         for q in quizzes
         if q.due_time is not None and q.due_time > now and q.submitted is not True
     }
     for sid in sites:
-        submitted_titles = fetch_submitted_quiz_titles(client, sid)
-        if not submitted_titles:
-            continue
+        ids, titles = fetch_submitted_quizzes(client, sid)
+        submitted_ids = {f"quiz-{i}" for i in ids}
         for q in quizzes:
-            if q.site_id == sid and q.title.strip() in submitted_titles:
+            if q.site_id != sid:
+                continue
+            if q.id in submitted_ids or q.title.strip() in titles:
                 q.submitted = True
 
 

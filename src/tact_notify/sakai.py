@@ -202,33 +202,41 @@ def _samigo_placement_id(client: SakaiClient, site_id: str) -> str | None:
     return None
 
 
-def fetch_submitted_quiz_titles(client: SakaiClient, site_id: str) -> set[str]:
-    """Titles listed under 提出済みテスト on the site's Samigo tool page.
+def fetch_submitted_quizzes(client: SakaiClient, site_id: str) -> tuple[set[str], set[str]]:
+    """(publishedAssessmentIds, titles) listed under 提出済みテスト on the
+    site's Samigo tool page.
 
     A row's presence is the only reliable submitted signal: sam_pub has none,
     quizzes allowing resubmission stay in the テストを受験 list after taking,
     and a score may never appear (not every quiz is auto-graded) — so scores
-    are deliberately ignored. Returns an empty set when in doubt, which keeps
-    the quiz in the digest (the safe direction)."""
+    are deliberately ignored. A row carries a publishedId only while a
+    feedback/review link is rendered; otherwise the title is plain text
+    (verified on TACT), hence both keys are returned and the caller matches
+    by id first, title as fallback. Returns empty sets when in doubt, which
+    keeps the quiz in the digest (the safe direction)."""
+    import re
+
     from bs4 import BeautifulSoup
 
     try:
         placement = _samigo_placement_id(client, site_id)
         if not placement:
-            return set()
+            return set(), set()
         html = client.get_text(f"/portal/site/{site_id}/tool/{placement}")
     except Exception:
-        return set()
+        return set(), set()
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", id=lambda i: i and "reviewTable" in i)
     if table is None:
-        return set()  # nothing submitted in this site yet
+        return set(), set()  # nothing submitted in this site yet
+    ids: set[str] = set()
     titles: set[str] = set()
     for row in table.find_all("tr"):
         cell = row.find("td")
         if cell is None:  # header row
             continue
+        ids.update(re.findall(r"'publishedId':'(\d+)'", str(row)))
         title = cell.get_text(strip=True)
         if title:
             titles.add(title)
-    return titles
+    return ids, titles
