@@ -6,6 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
+    "beautifulsoup4>=4.15.0",
     "httpx>=0.28.1",
     "playwright>=1.61.0",
     "pyotp>=2.10.0",

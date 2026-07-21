@@ -23,6 +23,11 @@ def _dump(name: str, data) -> None:
     )
 
 
+def _dump_text(name: str, text: str) -> None:
+    OUT_DIR.mkdir(exist_ok=True)
+    (OUT_DIR / name).write_text(text, encoding="utf-8")
+
+
 def _summary(name: str, data) -> str:
     if isinstance(data, dict):
         coll_key = next((k for k in data if k.endswith("_collection")), None)
@@ -81,6 +86,44 @@ def run() -> None:
                     print(_summary(name, data))
                 except Exception as e:
                     print(f"{name}: FAILED ({e})")
+
+        # Samigo tool page per course site: the "提出済みテスト" (submitted
+        # assessments) list is only visible in the tool HTML, not via /direct.
+        course_ids: list[str] = []
+        if isinstance(site_data, dict):
+            course_ids = [
+                s.get("id")
+                for s in site_data.get("site_collection", [])
+                if s.get("id") and s.get("type") == "course"
+            ]
+        for sid in course_ids:
+            short = sid  # full site id — short prefixes collide across sites
+            try:
+                data = client.get_json(f"/direct/sam_pub/context/{sid}.json")
+                _dump(f"sam_pub_{short}", data)
+            except Exception as e:
+                print(f"sam_pub_{short}: FAILED ({e})")
+            try:
+                pages = client.get_json(f"/direct/site/{sid}/pages.json")
+                _dump(f"pages_{short}", pages)
+            except Exception as e:
+                print(f"pages_{short}: FAILED ({e})")
+                continue
+            placement = None
+            for page in pages if isinstance(pages, list) else []:
+                for tool in page.get("tools", []):
+                    if tool.get("toolId") == "sakai.samigo":
+                        placement = tool.get("id")
+            if not placement:
+                print(f"samigo_{short}: no samigo tool")
+                continue
+            try:
+                html = client.get_text(f"/portal/site/{sid}/tool/{placement}")
+                _dump_text(f"samigo_{short}.html", html)
+                print(f"samigo_{short}: {len(html)} chars"
+                      f"{' (has 提出済みテスト)' if '提出済みテスト' in html else ''}")
+            except Exception as e:
+                print(f"samigo_{short}: FAILED ({e})")
 
         if os.environ.get("GITHUB_ACTIONS") != "true":
             print(f"\nraw dumps in {OUT_DIR}")

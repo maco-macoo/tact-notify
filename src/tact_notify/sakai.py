@@ -34,6 +34,15 @@ class SakaiClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_text(self, path: str, **params: Any) -> str:
+        wait = REQUEST_INTERVAL_SEC - (time.monotonic() - self._last_request_at)
+        if wait > 0:
+            time.sleep(wait)
+        resp = self._http.get(path, params=params or None)
+        self._last_request_at = time.monotonic()
+        resp.raise_for_status()
+        return resp.text
+
     def current_user_eid(self) -> str:
         """Empty string means an anonymous session (login actually failed)."""
         data = self.get_json("/direct/session/current.json")
@@ -153,7 +162,10 @@ def fetch_announcements(client: SakaiClient, site_titles: dict[str, str]):
 
 def fetch_quizzes(client: SakaiClient, site_titles: dict[str, str]):
     """Samigo published assessments, per site. Quiz deadlines are separate from
-    assignments. submittedCount is the student's own submission count here."""
+    assignments. sam_pub carries no usable per-student submission info (its
+    submittedCount stays 0 even after the student submits), so submitted is
+    left None here; daily.py resolves it from the tool page's 提出済みテスト
+    list via fetch_submitted_quiz_titles()."""
     from .models import Assignment
 
     out: list[Assignment] = []
@@ -166,7 +178,6 @@ def fetch_quizzes(client: SakaiClient, site_titles: dict[str, str]):
             qid = q.get("publishedAssessmentId")
             if qid is None:
                 continue
-            count = q.get("submittedCount")
             out.append(
                 Assignment(
                     id=f"quiz-{qid}",
@@ -175,8 +186,49 @@ def fetch_quizzes(client: SakaiClient, site_titles: dict[str, str]):
                     title=str(first_of(q, "title") or "(無題)"),
                     open_time=parse_time(first_of(q, "startDate")),
                     due_time=parse_time(first_of(q, "dueDate", "retractDate")),
-                    submitted=(count > 0) if isinstance(count, int) else None,
+                    submitted=None,
                     kind="quiz",
                 )
             )
     return out
+
+
+def _samigo_placement_id(client: SakaiClient, site_id: str) -> str | None:
+    pages = client.get_json(f"/direct/site/{site_id}/pages.json")
+    for page in pages if isinstance(pages, list) else []:
+        for tool in page.get("tools", []):
+            if tool.get("toolId") == "sakai.samigo" and tool.get("id"):
+                return str(tool["id"])
+    return None
+
+
+def fetch_submitted_quiz_titles(client: SakaiClient, site_id: str) -> set[str]:
+    """Titles listed under 提出済みテスト on the site's Samigo tool page.
+
+    A row's presence is the only reliable submitted signal: sam_pub has none,
+    quizzes allowing resubmission stay in the テストを受験 list after taking,
+    and a score may never appear (not every quiz is auto-graded) — so scores
+    are deliberately ignored. Returns an empty set when in doubt, which keeps
+    the quiz in the digest (the safe direction)."""
+    from bs4 import BeautifulSoup
+
+    try:
+        placement = _samigo_placement_id(client, site_id)
+        if not placement:
+            return set()
+        html = client.get_text(f"/portal/site/{site_id}/tool/{placement}")
+    except Exception:
+        return set()
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", id=lambda i: i and "reviewTable" in i)
+    if table is None:
+        return set()  # nothing submitted in this site yet
+    titles: set[str] = set()
+    for row in table.find_all("tr"):
+        cell = row.find("td")
+        if cell is None:  # header row
+            continue
+        title = cell.get_text(strip=True)
+        if title:
+            titles.add(title)
+    return titles

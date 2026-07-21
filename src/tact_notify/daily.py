@@ -6,7 +6,12 @@ from datetime import datetime
 
 from . import config
 from .notify import days_left_label, fmt_dt, post
-from .sakai import fetch_assignments, fetch_quizzes, fetch_site_titles
+from .sakai import (
+    fetch_assignments,
+    fetch_quizzes,
+    fetch_site_titles,
+    fetch_submitted_quiz_titles,
+)
 from .session import open_session
 
 
@@ -18,10 +23,11 @@ def run(dry_run: bool = False) -> None:
         titles = fetch_site_titles(client)
         assignments = fetch_assignments(client, titles)
         quizzes = fetch_quizzes(client, titles)
+        now = datetime.now(config.JST)
+        _mark_submitted_quizzes(client, quizzes, now)
     finally:
         client.close()
 
-    now = datetime.now(config.JST)
     open_quizzes = [
         q for q in quizzes if q.open_time is None or q.open_time <= now
     ]
@@ -36,6 +42,24 @@ def run(dry_run: bool = False) -> None:
 
     post(webhook, format_digest(pending, now), dry_run=dry_run)
     print(f"pending: {len(pending)}")
+
+
+def _mark_submitted_quizzes(client, quizzes: list, now: datetime) -> None:
+    """Flip submitted=True for quizzes listed under 提出済みテスト on the
+    Samigo tool page (matched by title within the site). Only sites with a
+    quiz that could reach the digest are scraped, to keep requests down."""
+    sites = {
+        q.site_id
+        for q in quizzes
+        if q.due_time is not None and q.due_time > now and q.submitted is not True
+    }
+    for sid in sites:
+        submitted_titles = fetch_submitted_quiz_titles(client, sid)
+        if not submitted_titles:
+            continue
+        for q in quizzes:
+            if q.site_id == sid and q.title.strip() in submitted_titles:
+                q.submitted = True
 
 
 def format_digest(pending: list, now: datetime) -> str:
