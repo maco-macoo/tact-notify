@@ -193,6 +193,35 @@ def fetch_quizzes(client: SakaiClient, site_titles: dict[str, str]):
     return out
 
 
+def mark_submitted_quizzes(
+    client: SakaiClient,
+    quizzes: list,
+    now: datetime,
+    only_sites: set[str] | None = None,
+) -> None:
+    """Flip submitted=True for quizzes listed under 提出済みテスト on the
+    Samigo tool page. Matched by publishedId when the row exposes one, by
+    title within the site otherwise (published titles are unique per site).
+    Only sites with a quiz that is unsubmitted and still open are scraped;
+    only_sites narrows further (check passes the sites whose Notion card is
+    still open, so the steady-state 10-min run scrapes nothing)."""
+    sites = {
+        q.site_id
+        for q in quizzes
+        if q.due_time is not None and q.due_time > now and q.submitted is not True
+    }
+    if only_sites is not None:
+        sites &= only_sites
+    for sid in sites:
+        ids, titles = fetch_submitted_quizzes(client, sid)
+        submitted_ids = {f"quiz-{i}" for i in ids}
+        for q in quizzes:
+            if q.site_id != sid:
+                continue
+            if q.id in submitted_ids or q.title.strip() in titles:
+                q.submitted = True
+
+
 def _samigo_placement_id(client: SakaiClient, site_id: str) -> str | None:
     pages = client.get_json(f"/direct/site/{site_id}/pages.json")
     for page in pages if isinstance(pages, list) else []:

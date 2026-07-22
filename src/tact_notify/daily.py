@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from . import config
+from . import config, notion, state
 from .notify import days_left_label, fmt_dt, post
+from .notion_sync import sync_done
 from .sakai import (
     fetch_assignments,
     fetch_quizzes,
     fetch_site_titles,
-    fetch_submitted_quizzes,
+    mark_submitted_quizzes,
 )
 from .session import open_session
 
@@ -24,7 +25,7 @@ def run(dry_run: bool = False) -> None:
         assignments = fetch_assignments(client, titles)
         quizzes = fetch_quizzes(client, titles)
         now = datetime.now(config.JST)
-        _mark_submitted_quizzes(client, quizzes, now)
+        mark_submitted_quizzes(client, quizzes, now)
     finally:
         client.close()
 
@@ -43,26 +44,21 @@ def run(dry_run: bool = False) -> None:
     post(webhook, format_digest(pending, now), dry_run=dry_run)
     print(f"pending: {len(pending)}")
 
-
-def _mark_submitted_quizzes(client, quizzes: list, now: datetime) -> None:
-    """Flip submitted=True for quizzes listed under 提出済みテスト on the
-    Samigo tool page. Matched by publishedId when the row exposes one, by
-    title within the site otherwise (published titles are unique per site).
-    Only sites with a quiz that could reach the digest are scraped, to keep
-    requests down."""
-    sites = {
-        q.site_id
-        for q in quizzes
-        if q.due_time is not None and q.due_time > now and q.submitted is not True
-    }
-    for sid in sites:
-        ids, titles = fetch_submitted_quizzes(client, sid)
-        submitted_ids = {f"quiz-{i}" for i in ids}
-        for q in quizzes:
-            if q.site_id != sid:
-                continue
-            if q.id in submitted_ids or q.title.strip() in titles:
-                q.submitted = True
+    # nightly safety net: flip Notion cards to 完了 for anything the scoped
+    # 10-min check sweep may have missed
+    if notion.enabled():
+        try:
+            st = state.load()
+            nc = notion.open_client(dry_run)
+            try:
+                marked = sync_done(nc, assignments + open_quizzes, st)
+            finally:
+                nc.close()
+            if not dry_run:
+                state.save(st)
+            print(f"notion: marked done {marked}")
+        except Exception as e:  # Notion must never break the digest
+            print(f"notion: sync skipped due to error: {e}")
 
 
 def format_digest(pending: list, now: datetime) -> str:

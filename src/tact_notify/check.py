@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-from . import config, state
+from datetime import datetime
+
+from . import config, notion, state
 from .notify import fmt_dt, post
-from .sakai import fetch_announcements, fetch_assignments, fetch_quizzes, fetch_site_titles
+from .notion_sync import pending_of, sync_done, sync_new
+from .sakai import (
+    fetch_announcements,
+    fetch_assignments,
+    fetch_quizzes,
+    fetch_site_titles,
+    mark_submitted_quizzes,
+)
 from .session import open_session
 
 MAX_ITEMS_PER_RUN = 15  # spam guard if state is ever lost
@@ -36,18 +45,46 @@ def _announce_block(n) -> dict:
     }
 
 
+def _notion_sync(tasks_to_create, all_tasks, st, dry_run: bool) -> None:
+    """Create pages for tasks_to_create, mark submitted ones done. Never lets
+    a Notion failure escape into the Slack/state path."""
+    if not notion.enabled():
+        print("notion: disabled (NOTION_TOKEN/NOTION_DS_ID not set)")
+        return
+    try:
+        nc = notion.open_client(dry_run)
+        try:
+            created = sync_new(nc, tasks_to_create, st)
+            marked = sync_done(nc, all_tasks, st)
+        finally:
+            nc.close()
+        print(f"notion: created {created}, marked done {marked}")
+    except Exception as e:  # defensive: Notion must never break notifications
+        print(f"notion: sync skipped due to error: {e}")
+
+
 def run(dry_run: bool = False) -> None:
     webhook = config.SLACK_WEBHOOK_NOTIFY()
+    st = state.load()  # before the session: the quiz sweep below needs both
     client = open_session(webhook, dry_run)
     try:
         titles = fetch_site_titles(client)
         assignments = fetch_assignments(client, titles)
         quizzes = fetch_quizzes(client, titles)
         announcements = fetch_announcements(client, titles)
+        now = datetime.now(config.JST)
+        if notion.enabled():
+            # scrape only sites that still have an open (not done) quiz card,
+            # so the steady-state 10-min run adds no Samigo requests
+            open_quiz_sites = {
+                q.site_id
+                for q in quizzes
+                if st["notion"].get(q.id, {}).get("done") is not True
+            }
+            mark_submitted_quizzes(client, quizzes, now, only_sites=open_quiz_sites)
     finally:
         client.close()
 
-    st = state.load()
     first_run = not st["assignments"] and not st["announcements"]
     new_assignments = [a for a in assignments if a.id not in st["assignments"]]
     new_quizzes = [q for q in quizzes if q.id not in st["quizzes"]]
@@ -63,6 +100,9 @@ def run(dry_run: bool = False) -> None:
 
     if first_run:
         st["seeded_at"] = stamp
+        # seed Notion with what the daily digest would show (pending tasks),
+        # so the dashboard is populated from day one / after state loss
+        _notion_sync(pending_of(assignments, quizzes, now), assignments + quizzes, st, dry_run)
         if not dry_run:
             state.save(st)
         post(
@@ -97,6 +137,8 @@ def run(dry_run: bool = False) -> None:
             f"お知らせ{len(new_announcements)}件"
         )
         post(webhook, fallback, blocks=blocks, dry_run=dry_run)
+
+    _notion_sync(new_tasks, assignments + quizzes, st, dry_run)
 
     if not dry_run:
         state.save(st)
