@@ -39,3 +39,6 @@ MS_TOTP_SECRET = lambda: env("MS_TOTP_SECRET", required=False)  # noqa: E731
 MS_PASSWORD = lambda: env("MS_PASSWORD")  # noqa: E731
 SLACK_WEBHOOK_NOTIFY = lambda: env("SLACK_WEBHOOK_NOTIFY")  # noqa: E731
 SLACK_WEBHOOK_DIGEST = lambda: env("SLACK_WEBHOOK_DIGEST")  # noqa: E731
+# Notion連携(任意): 未設定ならNotion同期はスキップされ、従来のSlack通知のみ動く
+NOTION_TOKEN = lambda: env("NOTION_TOKEN", required=False)  # noqa: E731
+NOTION_DS_ID = lambda: env("NOTION_DS_ID", required=False)  # noqa: E731

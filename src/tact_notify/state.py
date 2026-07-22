@@ -1,4 +1,9 @@
-"""state/seen.json: ids we have already notified about (committed to the repo)."""
+"""state/seen.json: ids we have already notified about.
+
+Persisted across CI runs via the GitHub Actions cache (see notify.yml),
+never committed to the repo. The cache is best-effort — the "notion" map
+is only an optimization and is rebuilt from Notion itself after a loss
+(query-first dedupe in notion_sync)."""
 
 from __future__ import annotations
 
@@ -13,6 +18,8 @@ _EMPTY = {
     "assignments": {},
     "announcements": {},
     "quizzes": {},
+    # tact_id -> {"page_id": str | None, "done": bool} (Notion sync cache)
+    "notion": {},
 }
 
 
