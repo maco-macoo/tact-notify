@@ -10,6 +10,7 @@ errors when crossed.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -147,3 +148,37 @@ class NotionClient:
 
 def open_client(dry_run: bool = False) -> NotionClient:
     return NotionClient(config.NOTION_TOKEN(), config.NOTION_DS_ID(), dry_run=dry_run)
+
+
+def run_test(dry_run: bool = False) -> None:
+    """`python -m tact_notify notion-test`: verify token, data source, page
+    create and mark-done end to end. TACT is not touched at all."""
+    if not enabled():
+        raise SystemExit("notion: NOTION_TOKEN / NOTION_DS_ID が未設定です (.env / GitHub Secrets を確認)")
+    nc = open_client(dry_run)
+    try:
+        print(f"1/4 トークンOK (bot: {nc.whoami()})")
+        existing = nc.find_page_by_tact_id("notion-test")
+        print(f"2/4 データソースOK (既存テストページ: {existing['page_id'] if existing else 'なし'})")
+        a = Assignment(
+            id="notion-test",
+            site_id="notion-test",
+            site_title="接続確認",
+            title="【テスト】tact-notify 接続確認",
+            open_time=None,
+            due_time=datetime.now(config.JST) + timedelta(days=1),
+            submitted=None,
+        )
+        if existing:
+            page_id: str | None = existing["page_id"]
+            print("3/4 作成スキップ (テストページが既に存在)")
+        else:
+            page_id = nc.create_task_page(a)
+            print(f"3/4 ページ作成OK ({page_id if page_id else 'dry-run'})")
+        if page_id:
+            nc.mark_done(page_id)
+            print("4/4 完了化OK")
+            print(f"ページ: https://www.notion.so/{page_id.replace('-', '')}")
+            print("確認できたら、このテストページはNotion上で削除してかまいません。")
+    finally:
+        nc.close()

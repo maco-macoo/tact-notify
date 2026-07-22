@@ -55,6 +55,8 @@ jobs:
           MS_TOTP_SECRET: ${{ secrets.MS_TOTP_SECRET }}
           SLACK_WEBHOOK_NOTIFY: ${{ secrets.SLACK_WEBHOOK_NOTIFY }}
           SLACK_WEBHOOK_DIGEST: ${{ secrets.SLACK_WEBHOOK_DIGEST }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DS_ID: ${{ secrets.NOTION_DS_ID }}
         run: uv run python -m tact_notify ${{ steps.mode.outputs.mode }}
       - name: Save state & session
         if: always()

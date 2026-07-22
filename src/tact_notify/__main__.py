@@ -6,7 +6,7 @@ import argparse
 def main() -> None:
     parser = argparse.ArgumentParser(prog="tact_notify")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("check", "daily", "test"):
+    for name in ("check", "daily", "test", "notion-test"):
         p = sub.add_parser(name)
         p.add_argument("--dry-run", action="store_true", help="print payloads, no Slack post / state write")
     sub.add_parser("probe")
@@ -39,6 +39,10 @@ def main() -> None:
         from . import selftest
 
         selftest.run(dry_run=args.dry_run)
+    elif args.command == "notion-test":
+        from . import notion
+
+        notion.run_test(dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

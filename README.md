@@ -4,6 +4,7 @@
 
 - **新着通知**（10分ごと）: 新しく公開された課題・小テスト（公開日時・締切日時つき）とお知らせを通知
 - **未提出まとめ**（毎朝7:00 JST）: 未提出かつ締切前の課題・小テストを、締切が早い順で通知
+- **Notion連携**（任意）: 新着の課題・小テストをNotionのデータベースにカードとして自動登録し、提出を検知すると自動でステータスを「完了」に変更（[設定方法](#notion連携任意)）
 
 処理は GitHub Actions 上で実行され（Publicリポジトリなので無料）、PCの電源に依存しない。同じ項目が二度通知されることはない（通知済みIDを記録し、新着の差分だけ送る）。通知済みIDやログインセッションは Actions のキャッシュに保持し、リポジトリには一切コミットしない。
 
@@ -64,6 +65,71 @@ GitHubの `schedule` に頼らず、外部スケジューラから `workflow_dis
 
 https://api.slack.com/apps → Create New App（From scratch）→ Incoming Webhooks を On → 通知したいチャンネルごとに「Add New Webhook to Workspace」で URL を発行する。
 
+## Notion連携（任意）
+
+新着の課題・小テストをNotionの専用データベースにカードとして登録し、提出を検知すると自動でステータスを「完了」にする。未設定なら従来どおりSlack通知のみ。
+
+### 1. データベースを用意する
+
+以下のプロパティを持つデータベースを作成する（名前は**一字一句この通り**にすること。`TACT ID` のスペースも含む。改名すると連携が壊れる）:
+
+| プロパティ | 型 | 内容 |
+|---|---|---|
+| 名前 | タイトル | 課題名 |
+| 講義 | セレクト | 講義サイト名（自動追加される） |
+| 締切 | 日付 | 締切日時 |
+| 種類 | セレクト | 課題 / クイズ |
+| ステータス | セレクト | 未着手 / 進行中 / 完了 |
+| TACT ID | テキスト | 重複防止キー（触らない） |
+| URL | URL | TACTの講義サイトへのリンク |
+
+おすすめビュー: ギャラリー「未完了」（締切昇順・「ステータス≠完了」フィルタ）、カレンダー（締切ベース）、テーブル「全件」。
+
+> カードを一覧から消したいときは、ページを**削除せず**ステータスを「完了」にする（フィルタで消える）。手動で「完了」にしてもよい。システムがステータスを「完了」以外に書き換えることはない。
+
+### 2. インテグレーションを作成してDBに接続する
+
+1. https://www.notion.so/my-integrations →「新しいインテグレーション」
+2. 名前 `tact-notify`、種類は**内部**、対象ワークスペースを選択して保存
+3. 「機能」タブで「コンテンツを読み取る・更新・挿入」が有効なことを確認し、「内部インテグレーションシークレット」（`ntn_...`）をコピー
+4. 作成したDBページの右上 `⋯` →「接続」→ `tact-notify` を追加
+
+### 3. データソースIDを取得する
+
+DBページのURLに含まれる32桁の英数字が database_id。以下でデータソースIDを取得する:
+
+```sh
+curl -H "Authorization: Bearer <NOTION_TOKEN>" -H "Notion-Version: 2025-09-03" \
+  https://api.notion.com/v1/databases/<database_id>
+```
+
+レスポンスの `data_sources[0].id` が `NOTION_DS_ID`。
+
+### 4. 環境変数を登録する
+
+GitHub Secrets（Settings → Secrets and variables → Actions）とローカル `.env` に以下を追加:
+
+| 名前 | 内容 |
+|---|---|
+| `NOTION_TOKEN` | インテグレーションシークレット（`ntn_...`） |
+| `NOTION_DS_ID` | データソースID |
+
+### 5. 接続確認
+
+```sh
+uv run python -m tact_notify notion-test
+```
+
+トークン検証→クエリ→テストページ作成→完了化まで通ることを確認する（テストページは確認後に削除してよい）。
+
+### 動作の詳細
+
+- 初回実行（またはstate消失後）は、未提出・締切前の課題をまとめてNotionに登録する
+- 2回目以降は新着の課題・小テストのみ登録（お知らせは登録しない）
+- 提出検知は10分ごとのcheckと毎朝のdailyの両方で動き、検知するとカードのステータスを「完了」に変更する
+- `TACT ID` で重複判定するため、stateが消えてもページは重複しない
+- Notion APIの障害時は警告ログのみで続行し、Slack通知には影響しない（未登録分は次回実行で自動リトライ）
+
 ## ローカル実行 / 開発
 
 ```sh
@@ -75,7 +141,7 @@ uv run python -m tact_notify check   # 新着チェック
 uv run python -m tact_notify daily   # 未提出まとめ
 ```
 
-`.env`（`.env.template` 参照）に上記5変数を書けばローカルでも動く。`--dry-run` を付けると Slack送信せず内容を表示する。
+`.env`（`.env.template` 参照）に上記5変数を書けばローカルでも動く（Notion連携を使う場合は `NOTION_TOKEN` / `NOTION_DS_ID` も）。`--dry-run` を付けると Slack送信せず内容を表示する。
 
 ## 仕組み
 
@@ -85,8 +151,9 @@ GitHub Actions (cron)
        ├─ auth     Playwright で Microsoft SSO ログイン（TOTP / Shibboleth同意を自動処理）
        ├─ sakai    Sakai /direct REST API から課題・小テスト・お知らせ・講義名を取得
        ├─ state    通知済みID（state/seen.json）を Actions キャッシュで永続化（非コミット）
-       ├─ check    新着の差分 → 新着通知
-       └─ daily    未提出・締切前の一覧 → 未提出まとめ
+       ├─ notion   （任意）課題・小テストをNotion DBへ登録、提出検知で完了化
+       ├─ check    新着の差分 → 新着通知 + Notion登録
+       └─ daily    未提出・締切前の一覧 → 未提出まとめ + Notion完了化
 ```
 
 通知対象は通常の講義サイト（`site.type == "course"`）のみ。取得できる時刻や提出状況などのフィールド仕様は `uv run python -m tact_notify probe` で実データを確認できる。
