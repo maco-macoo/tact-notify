@@ -64,7 +64,17 @@ def sync_done(nc: NotionClient, tasks: list[Assignment], st: dict) -> int:
         if a.submitted is not True:
             continue
         entry = st["notion"].get(a.id)
-        if not entry or entry.get("done") or not entry.get("page_id"):
+        if entry is None:
+            # page may exist without state knowing it (state loss, or seeded
+            # from another environment): resolve from Notion once. A missing
+            # page is recorded as done so we never re-query it.
+            try:
+                entry = nc.find_page_by_tact_id(a.id) or {"page_id": None, "done": True}
+            except NotionError as e:
+                print(f"notion: failed to look up {a.id}: {e}")
+                continue
+            st["notion"][a.id] = entry
+        if entry.get("done") or not entry.get("page_id"):
             continue
         try:
             nc.mark_done(entry["page_id"])
