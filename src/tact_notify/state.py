@@ -34,11 +34,15 @@ def load() -> dict:
 
 def save(state: dict) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(
+    # Write to a temp file then rename so a crash mid-write can't leave a
+    # truncated seen.json behind (the Actions cache would then persist it).
+    tmp = STATE_PATH.with_name(STATE_PATH.name + ".tmp")
+    tmp.write_text(
         json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
         newline="\n",
     )
+    tmp.replace(STATE_PATH)
 
 
 def now_iso() -> str:
