@@ -41,22 +41,11 @@ jobs:
       # ローテーションキー + プレフィックス復元で「書き換え可能なキャッシュ」にする。
       # 平文ディレクトリではなく暗号化 tar をキャッシュする(冒頭コメント参照)。
       - name: Restore state & session
-        id: restore
         uses: actions/cache/restore@v4
         with:
           path: tact-cache.tar.enc
           key: tact-cache-${{ github.run_id }}
           restore-keys: tact-cache-
-      # 旧形式(平文 tact-state-*)からの移行用。暗号化キャッシュが出揃ったら削除可。
-      - name: Restore legacy plaintext cache
-        if: steps.restore.outputs.cache-matched-key == ''
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            state
-            .runtime
-          key: tact-state-${{ github.run_id }}
-          restore-keys: tact-state-
       - name: Decrypt state & session
         env:
           CACHE_ENC_KEY: ${{ secrets.CACHE_ENC_KEY }}
