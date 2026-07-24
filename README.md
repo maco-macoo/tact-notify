@@ -21,7 +21,7 @@ TACT公式ヘルプ[「スクレイピングツールを利用したい」](http
 ## セットアップ
 
 1. このリポジトリをフォーク
-2. フォーク先の **Settings → Secrets and variables → Actions** に次の5つを登録:
+2. フォーク先の **Settings → Secrets and variables → Actions** に次の6つを登録:
    | 名前 | 内容 |
    |---|---|
    | `MS_EMAIL` | 大学アカウントのメールアドレス |
@@ -29,6 +29,7 @@ TACT公式ヘルプ[「スクレイピングツールを利用したい」](http
    | `MS_TOTP_SECRET` | 認証アプリのTOTP秘密鍵（下記） |
    | `SLACK_WEBHOOK_NOTIFY` | 新着通知チャンネルの Incoming Webhook URL |
    | `SLACK_WEBHOOK_DIGEST` | 未提出まとめチャンネルの Incoming Webhook URL |
+   | `CACHE_ENC_KEY` | キャッシュ暗号化キー（`openssl rand -hex 32` で生成した任意のランダム文字列） |
 3. **Actions** タブでワークフローを有効化する
 4. 下記「定期実行のセットアップ」で外部スケジューラから定期起動を設定する
 
@@ -146,11 +147,11 @@ uv run python -m tact_notify daily   # 未提出まとめ
 ## 仕組み
 
 ```
-GitHub Actions (cron)
+外部cron → workflow_dispatch → GitHub Actions
   └─ python -m tact_notify {check|daily}
        ├─ auth     Playwright で Microsoft SSO ログイン（TOTP / Shibboleth同意を自動処理）
        ├─ sakai    Sakai /direct REST API から課題・小テスト・お知らせ・講義名を取得
-       ├─ state    通知済みID（state/seen.json）を Actions キャッシュで永続化（非コミット）
+       ├─ state    通知済みID（state/seen.json）を Actions キャッシュで永続化（非コミット・暗号化）
        ├─ notion   （任意）課題・小テストをNotion DBへ登録、提出検知で完了化
        ├─ check    新着の差分 → 新着通知 + Notion登録
        └─ daily    未提出・締切前の一覧 → 未提出まとめ + Notion完了化
