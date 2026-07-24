@@ -4,6 +4,8 @@ name: tact-notify
 # (cron-job.org 等)から GitHub API 経由で workflow_dispatch を叩く方式にしている。
 # GitHubの schedule(cron)は新規リポジトリで発火しない/大幅遅延することがあるため。
 # 通知済みID(state)とセッションはActionsキャッシュで永続化(リポジトリ非コミット)。
+# Publicリポジトリのキャッシュはフォーク経由のPRから読み取られ得るため、
+# 中身は CACHE_ENC_KEY (Secrets) で暗号化した tar 1本だけを保存する。
 #
 # 外部から: POST /repos/maco-macoo/tact-notify/actions/workflows/notify.yml/dispatches
 #   body: {"ref":"main","inputs":{"mode":"check"}}  (10分ごと)
@@ -37,7 +39,17 @@ jobs:
       - run: uv run playwright install --with-deps chromium
       # 通知済みID(state/)とセッションクッキー(.runtime/)を実行間で保持。
       # ローテーションキー + プレフィックス復元で「書き換え可能なキャッシュ」にする。
+      # 平文ディレクトリではなく暗号化 tar をキャッシュする(冒頭コメント参照)。
       - name: Restore state & session
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: tact-cache.tar.enc
+          key: tact-cache-${{ github.run_id }}
+          restore-keys: tact-cache-
+      # 旧形式(平文 tact-state-*)からの移行用。暗号化キャッシュが出揃ったら削除可。
+      - name: Restore legacy plaintext cache
+        if: steps.restore.outputs.cache-matched-key == ''
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -45,6 +57,22 @@ jobs:
             .runtime
           key: tact-state-${{ github.run_id }}
           restore-keys: tact-state-
+      - name: Decrypt state & session
+        env:
+          CACHE_ENC_KEY: ${{ secrets.CACHE_ENC_KEY }}
+        run: |
+          if [ -z "$CACHE_ENC_KEY" ]; then
+            echo "::error::CACHE_ENC_KEY secret is not set"
+            exit 1
+          fi
+          if [ -f tact-cache.tar.enc ]; then
+            if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
+                -pass env:CACHE_ENC_KEY -in tact-cache.tar.enc | tar -x; then
+              echo "::warning::cache decrypt failed; starting fresh"
+              rm -rf state .runtime
+            fi
+            rm -f tact-cache.tar.enc
+          fi
       - name: Decide mode
         id: mode
         run: echo "mode=${{ github.event.inputs.mode || 'check' }}" >> "$GITHUB_OUTPUT"
@@ -58,14 +86,24 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DS_ID: ${{ secrets.NOTION_DS_ID }}
         run: uv run python -m tact_notify ${{ steps.mode.outputs.mode }}
+      - name: Encrypt state & session
+        if: always()
+        env:
+          CACHE_ENC_KEY: ${{ secrets.CACHE_ENC_KEY }}
+        run: |
+          paths=""
+          if [ -d state ]; then paths="$paths state"; fi
+          if [ -d .runtime ]; then paths="$paths .runtime"; fi
+          if [ -n "$paths" ] && [ -n "$CACHE_ENC_KEY" ]; then
+            tar -c $paths | openssl enc -aes-256-cbc -pbkdf2 -iter 100000 \
+              -pass env:CACHE_ENC_KEY -out tact-cache.tar.enc
+          fi
       - name: Save state & session
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: |
-            state
-            .runtime
-          key: tact-state-${{ github.run_id }}
+          path: tact-cache.tar.enc
+          key: tact-cache-${{ github.run_id }}
       # 失敗時のスクリーンショット/HTMLは runner 上に残るだけで、アップロードしない。
       # Publicリポジトリのアーティファクトは誰でもDL可能で、ログイン画面のメール等が
       # マスクされず露出するため。失敗の把握はSlackアラート(失敗種別つき)で行う。

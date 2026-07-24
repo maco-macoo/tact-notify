@@ -85,7 +85,7 @@ def run(dry_run: bool = False) -> None:
     finally:
         client.close()
 
-    first_run = not st["assignments"] and not st["announcements"]
+    first_run = not st["assignments"] and not st["quizzes"] and not st["announcements"]
     new_assignments = [a for a in assignments if a.id not in st["assignments"]]
     new_quizzes = [q for q in quizzes if q.id not in st["quizzes"]]
     new_announcements = [n for n in announcements if n.id not in st["announcements"]]
@@ -138,7 +138,15 @@ def run(dry_run: bool = False) -> None:
         )
         post(webhook, fallback, blocks=blocks, dry_run=dry_run)
 
-    _notion_sync(new_tasks, assignments + quizzes, st, dry_run)
+    # Also retry pending tasks that never got a Notion page (an earlier failed
+    # sync must not become a permanent gap). Steady state: every synced id is in
+    # st["notion"], so this list is empty and adds no Notion calls.
+    unsynced = [
+        a
+        for a in pending_of(assignments, quizzes, now)
+        if a.id not in st["notion"] and all(a.id != t.id for t in new_tasks)
+    ]
+    _notion_sync(new_tasks + unsynced, assignments + quizzes, st, dry_run)
 
     if not dry_run:
         state.save(st)
