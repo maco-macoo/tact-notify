@@ -1,0 +1,71 @@
+name: tact-notify
+
+# 実行はGitHub Actions(Publicリポジトリなので無料)。ただし起動は外部スケジューラ
+# (cron-job.org 等)から GitHub API 経由で workflow_dispatch を叩く方式にしている。
+# GitHubの schedule(cron)は新規リポジトリで発火しない/大幅遅延することがあるため。
+# 通知済みID(state)とセッションはActionsキャッシュで永続化(リポジトリ非コミット)。
+#
+# 外部から: POST /repos/maco-macoo/tact-notify/actions/workflows/notify.yml/dispatches
+#   body: {"ref":"main","inputs":{"mode":"check"}}  (10分ごと)
+#         {"ref":"main","inputs":{"mode":"daily"}}  (毎日 22:00 UTC = 07:00 JST)
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "check=新着通知 / daily=未提出まとめ"
+        type: choice
+        options: [check, daily]
+        default: check
+
+concurrency:
+  group: tact-state
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('uv.lock') }}
+      - run: uv run playwright install --with-deps chromium
+      # 通知済みID(state/)とセッションクッキー(.runtime/)を実行間で保持。
+      # ローテーションキー + プレフィックス復元で「書き換え可能なキャッシュ」にする。
+      - name: Restore state & session
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            state
+            .runtime
+          key: tact-state-${{ github.run_id }}
+          restore-keys: tact-state-
+      - name: Decide mode
+        id: mode
+        run: echo "mode=${{ github.event.inputs.mode || 'check' }}" >> "$GITHUB_OUTPUT"
+      - name: Run ${{ steps.mode.outputs.mode }}
+        env:
+          MS_EMAIL: ${{ secrets.MS_EMAIL }}
+          MS_PASSWORD: ${{ secrets.MS_PASSWORD }}
+          MS_TOTP_SECRET: ${{ secrets.MS_TOTP_SECRET }}
+          SLACK_WEBHOOK_NOTIFY: ${{ secrets.SLACK_WEBHOOK_NOTIFY }}
+          SLACK_WEBHOOK_DIGEST: ${{ secrets.SLACK_WEBHOOK_DIGEST }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DS_ID: ${{ secrets.NOTION_DS_ID }}
+        run: uv run python -m tact_notify ${{ steps.mode.outputs.mode }}
+      - name: Save state & session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            state
+            .runtime
+          key: tact-state-${{ github.run_id }}
+      # 失敗時のスクリーンショット/HTMLは runner 上に残るだけで、アップロードしない。
+      # Publicリポジトリのアーティファクトは誰でもDL可能で、ログイン画面のメール等が
+      # マスクされず露出するため。失敗の把握はSlackアラート(失敗種別つき)で行う。
