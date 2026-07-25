@@ -50,7 +50,10 @@ def _alert_best_effort(alert_webhook: str, kind: str, detail: str, dry_run: bool
     try:
         alert_login_failure(alert_webhook, kind, detail, dry_run)
     except Exception as e:
-        print(f"::warning::Slack alert delivery failed: {e}")
+        try:
+            print(f"::warning::Slack alert delivery failed: {e}")
+        except Exception:
+            pass  # even a broken stdout must not swallow the SystemExit below
 
 
 def open_session(alert_webhook: str, dry_run: bool = False) -> SakaiClient:
