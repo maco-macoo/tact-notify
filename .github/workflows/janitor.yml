@@ -1,0 +1,74 @@
+name: janitor
+
+# notify.yml の run が「queued」(runner 待ち) のまま GitHub 側で放置されると、
+# concurrency グループ tact-state を塞ぎ、後続の workflow_dispatch が全て
+# 押し出しキャンセルされて通知が止まる (2026-07-25 に約6時間発生)。
+# notify.yml の timeout-minutes は job の実行開始後にしか効かないため、
+# この番人が外側から古い queued run を強制キャンセルして詰まりを解消する。
+#
+# status=queued は「runner 待ち」のみを指す。concurrency グループ順番待ちは
+# status=pending なので、正常な直列化待ちを誤って殺すことはない。
+#
+# 起動は GitHub の schedule を使う。新規リポジトリでは遅延・スキップされ得るが
+# (notify.yml 冒頭コメント参照)、番人は「いずれ発火すれば良い」ので許容し、
+# 外部スケジューラへのジョブ追加を不要にする方を優先している。
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+# tact-state グループには入れない (入れると詰まりの後ろに並んでしまう)。
+# janitor 専用グループで直列化しつつ cancel-in-progress で新しい sweep を優先する。
+# こうすると janitor 自身が queued のままスタックしても次の sweep が蹴り出せる。
+concurrency:
+  group: janitor
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel notify runs stuck in queue for 30+ minutes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SLACK_WEBHOOK_NOTIFY: ${{ secrets.SLACK_WEBHOOK_NOTIFY }}
+        run: |
+          now=$(date -u +%s)
+          runs=$(gh api --paginate \
+              "repos/$REPO/actions/workflows/notify.yml/runs?status=queued&per_page=100" \
+              --jq '.workflow_runs[] | "\(.id) \(.created_at)"') || {
+            echo "::error::failed to list queued runs"
+            exit 1
+          }
+          cancelled=""
+          while read -r id created; do
+            [ -z "$id" ] && continue
+            age=$(( now - $(date -u -d "$created" +%s) ))
+            if [ "$age" -ge 1800 ]; then
+              echo "run $id: queued for $((age/60)) min -> force-cancel"
+              if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" \
+                  || gh api -X POST "repos/$REPO/actions/runs/$id/force-cancel"; then
+                cancelled="$cancelled $id"
+              else
+                echo "::warning::failed to cancel run $id"
+              fi
+            else
+              echo "run $id: queued for $((age/60)) min -> leave"
+            fi
+          done <<EOF
+          $runs
+          EOF
+          if [ -n "$cancelled" ]; then
+            if [ -n "$SLACK_WEBHOOK_NOTIFY" ]; then
+              curl -sSf --max-time 15 -X POST -H 'Content-Type: application/json' \
+                -d "{\"text\":\":broom: janitor: runner待ちのままスタックしていた run を強制キャンセルしました:$cancelled\\n次の定期実行から自動復旧します。\"}" \
+                "$SLACK_WEBHOOK_NOTIFY" || echo "::warning::Slack alert failed"
+            else
+              echo "::warning::SLACK_WEBHOOK_NOTIFY not set; cancelled runs:$cancelled"
+            fi
+          fi
