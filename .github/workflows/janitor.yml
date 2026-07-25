@@ -65,7 +65,7 @@ jobs:
           EOF
           if [ -n "$cancelled" ]; then
             if [ -n "$SLACK_WEBHOOK_NOTIFY" ]; then
-              curl -sS --max-time 15 -X POST -H 'Content-Type: application/json' \
+              curl -sSf --max-time 15 -X POST -H 'Content-Type: application/json' \
                 -d "{\"text\":\":broom: janitor: runner待ちのままスタックしていた run を強制キャンセルしました:$cancelled\\n次の定期実行から自動復旧します。\"}" \
                 "$SLACK_WEBHOOK_NOTIFY" || echo "::warning::Slack alert failed"
             else
