@@ -34,7 +34,11 @@ def post(webhook_url: str, text: str, blocks: list | None = None, dry_run: bool 
         print("--- DRY RUN Slack payload ---")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
-    resp = httpx.post(webhook_url, json=payload, timeout=15)
+    # retries= covers connection establishment only, so a delivered-but-slow
+    # request is never re-sent (no duplicate messages)
+    transport = httpx.HTTPTransport(retries=2)
+    with httpx.Client(transport=transport, timeout=15) as client:
+        resp = client.post(webhook_url, json=payload)
     if resp.status_code != 200 or resp.text != "ok":
         raise RuntimeError(f"Slack webhook failed: {resp.status_code} {resp.text[:200]}")
 
