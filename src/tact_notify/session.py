@@ -125,7 +125,11 @@ def _flush_pending_alert(alert_webhook: str, dry_run: bool, health: dict) -> Non
         return  # a dry run must not consume the queued alert
     health.pop("pending_alert", None)
     health["alerted"] = True
-    _save_health(health)
+    if not _save_health(health):
+        # The alert went out but its consumption couldn't be recorded — it will
+        # repeat next run. Surface that; don't fail a run whose login/notify
+        # work can still succeed over a bookkeeping write.
+        _print_best_effort("::warning::could not persist login health; the delayed alert may repeat next run")
 
 
 def _fail(
@@ -169,7 +173,8 @@ def _note_success(alert_webhook: str, dry_run: bool) -> None:
         except Exception as e:  # keep the flag so the next run retries the notice
             _print_best_effort(f"::warning::recovery notice delivery failed: {e}")
     if not dry_run:  # a dry run must not clear real incident state
-        _save_health(health)
+        if not _save_health(health):
+            _print_best_effort("::warning::could not persist login health; the recovery notice may repeat next run")
 
 
 def open_session(
