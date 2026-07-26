@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 from .config import JST, STATE_PATH
 
@@ -32,17 +33,21 @@ def load() -> dict:
     return data
 
 
-def save(state: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # Write to a temp file then rename so a crash mid-write can't leave a
-    # truncated seen.json behind (the Actions cache would then persist it).
-    tmp = STATE_PATH.with_name(STATE_PATH.name + ".tmp")
+def write_json_atomic(path: Path, data: dict) -> None:
+    """Write to a temp file then rename so a crash mid-write can't leave a
+    truncated file behind (the Actions cache would then persist it)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
         newline="\n",
     )
-    tmp.replace(STATE_PATH)
+    tmp.replace(path)
+
+
+def save(state: dict) -> None:
+    write_json_atomic(STATE_PATH, state)
 
 
 def now_iso() -> str:

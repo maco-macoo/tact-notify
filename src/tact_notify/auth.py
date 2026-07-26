@@ -185,6 +185,8 @@ def login(
                 if e.kind in ("credentials", "challenge"):
                     raise
                 last = e
+            except PWTimeoutError as e:  # e.g. page.goto to an unreachable/slow TACT
+                last = LoginError("timeout", str(e))
             except Exception as e:  # browser crash etc.
                 last = LoginError("unknown", str(e))
             if i < attempts - 1:

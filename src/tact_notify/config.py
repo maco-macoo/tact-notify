@@ -14,6 +14,9 @@ JST = ZoneInfo("Asia/Tokyo")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STATE_PATH = REPO_ROOT / "state" / "seen.json"
+# Consecutive-login-failure tracking + undelivered alerts (see session.py).
+# Lives under state/ so the encrypted Actions cache persists it across runs.
+LOGIN_HEALTH_PATH = REPO_ROOT / "state" / "login_health.json"
 ARTIFACTS_DIR = REPO_ROOT / "artifacts"
 # Cached Sakai session cookies (gitignored). Reused across runs to skip the slow
 # Playwright SSO login while the session is still valid — also cuts how often we

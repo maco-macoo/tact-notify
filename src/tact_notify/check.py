@@ -66,7 +66,9 @@ def _notion_sync(tasks_to_create, all_tasks, st, dry_run: bool) -> None:
 def run(dry_run: bool = False) -> None:
     webhook = config.SLACK_WEBHOOK_NOTIFY()
     st = state.load()  # before the session: the quiz sweep below needs both
-    client = open_session(webhook, dry_run)
+    # check runs every 10 min, so a one-off network blip self-heals on the next
+    # run — tolerate the first transient login failure instead of going red
+    client = open_session(webhook, dry_run, tolerate_transient=True)
     try:
         titles = fetch_site_titles(client)
         assignments = fetch_assignments(client, titles)

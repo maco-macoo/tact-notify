@@ -58,7 +58,7 @@ def alert_login_failure(webhook_url: str, kind: str, detail: str, dry_run: bool 
     hints = {
         "credentials": "メールアドレスまたはパスワードが拒否されました。.env / GitHub Secrets を確認してください。",
         "challenge": "追加認証(MFA)を要求されました。MS_TOTP_SECRET の設定を確認してください。",
-        "timeout": "ログインフローが完了しませんでした(ページ構成変更やIPブロックの可能性)。",
+        "timeout": "ログインフローが完了しませんでした(TACT/ネットワークの一時的な不調、ページ構成変更、IPブロックの可能性)。",
         "unknown": "原因不明のエラーです。",
     }
     link = run_link()
