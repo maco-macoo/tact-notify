@@ -73,14 +73,17 @@ def _load_health() -> dict:
         return {}
 
 
-def _save_health(health: dict) -> None:
+def _save_health(health: dict) -> bool:
+    """Returns whether the health file was actually persisted. Callers that
+    grant leniency based on recorded state must not do so on a failed save."""
     try:
         if health:
             write_json_atomic(config.LOGIN_HEALTH_PATH, health)
         else:
             config.LOGIN_HEALTH_PATH.unlink(missing_ok=True)
+        return True
     except Exception:
-        pass  # health tracking is best-effort; never mask the real outcome
+        return False  # best-effort; never mask the real outcome
 
 
 def _print_best_effort(msg: str) -> None:
@@ -118,6 +121,8 @@ def _flush_pending_alert(alert_webhook: str, dry_run: bool, health: dict) -> Non
     except Exception as e:
         _print_best_effort(f"::warning::pending alert delivery failed again: {e}")
         return
+    if dry_run:
+        return  # a dry run must not consume the queued alert
     health.pop("pending_alert", None)
     health["alerted"] = True
     _save_health(health)
@@ -132,17 +137,22 @@ def _fail(
         health["streak"] = streak
         health["last_failure"] = {"kind": kind, "at": now_iso()}
         if tolerate_transient and streak < ALERT_AFTER:
-            _save_health(health)
-            _print_best_effort(
-                f"::warning::login failed ({kind}); transient failure "
-                f"{streak}/{ALERT_AFTER}, leaving the retry to the next run: {detail}"
-            )
-            raise SystemExit(0)
-    if _alert_best_effort(alert_webhook, kind, detail, dry_run):
-        health["alerted"] = True
-    elif "pending_alert" not in health:  # keep the oldest one — it dates the outage
-        health["pending_alert"] = {"kind": kind, "detail": detail, "at": now_iso()}
-    _save_health(health)
+            # Grant the grace only if the streak was actually persisted — with a
+            # broken state dir every run would see streak=1 and soft-fail
+            # forever, so fall through to the normal alert + failure instead.
+            if dry_run or _save_health(health):
+                _print_best_effort(
+                    f"::warning::login failed ({kind}); transient failure "
+                    f"{streak}/{ALERT_AFTER}, leaving the retry to the next run: {detail}"
+                )
+                raise SystemExit(0)
+    delivered = _alert_best_effort(alert_webhook, kind, detail, dry_run)
+    if not dry_run:  # a dry run must not record alerts it never really sent
+        if delivered:
+            health["alerted"] = True
+        elif "pending_alert" not in health:  # keep the oldest one — it dates the outage
+            health["pending_alert"] = {"kind": kind, "detail": detail, "at": now_iso()}
+        _save_health(health)
     raise SystemExit(f"login failed ({kind}): {detail}")
 
 
@@ -158,7 +168,8 @@ def _note_success(alert_webhook: str, dry_run: bool) -> None:
             health.pop("alerted", None)
         except Exception as e:  # keep the flag so the next run retries the notice
             _print_best_effort(f"::warning::recovery notice delivery failed: {e}")
-    _save_health(health)
+    if not dry_run:  # a dry run must not clear real incident state
+        _save_health(health)
 
 
 def open_session(
