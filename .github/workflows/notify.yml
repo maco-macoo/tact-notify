@@ -74,6 +74,8 @@ jobs:
           SLACK_WEBHOOK_DIGEST: ${{ secrets.SLACK_WEBHOOK_DIGEST }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DS_ID: ${{ secrets.NOTION_DS_ID }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_DIGEST: ${{ secrets.SLACK_CHANNEL_DIGEST }}
         run: uv run python -m tact_notify ${{ steps.mode.outputs.mode }}
       - name: Encrypt state & session
         if: always()

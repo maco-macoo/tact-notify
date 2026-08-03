@@ -45,3 +45,7 @@ SLACK_WEBHOOK_DIGEST = lambda: env("SLACK_WEBHOOK_DIGEST")  # noqa: E731
 # Notion連携(任意): 未設定ならNotion同期はスキップされ、従来のSlack通知のみ動く
 NOTION_TOKEN = lambda: env("NOTION_TOKEN", required=False)  # noqa: E731
 NOTION_DS_ID = lambda: env("NOTION_DS_ID", required=False)  # noqa: E731
+# Slackコマンド管理(任意): digestチャンネルの hide/show コマンドで非表示を管理。
+# 未設定なら従来どおり(コマンド読み取りも返信もしない)。
+SLACK_BOT_TOKEN = lambda: env("SLACK_BOT_TOKEN", required=False)  # noqa: E731
+SLACK_CHANNEL_DIGEST = lambda: env("SLACK_CHANNEL_DIGEST", required=False)  # noqa: E731

@@ -21,6 +21,21 @@ _EMPTY = {
     "quizzes": {},
     # tact_id -> {"page_id": str | None, "done": bool} (Notion sync cache)
     "notion": {},
+    # "course" until the fetch scope was widened to all sites; "all" after the
+    # one-time no-notification seeding of the newly visible sites (see check.py)
+    "scope": "course",
+    # tact_id -> {"title", "site_title", "due" (ISO|None), "hidden_at" (ISO)}
+    # — items the user hid from the daily digest via Slack commands (manage.py).
+    # Best-effort like the rest of state/: a cache loss just un-hides them.
+    "hidden": {},
+    "manage": {
+        "last_ts": None,  # Slack ts of the last processed channel message
+        "list_gen": 0,
+        # {"gen": int, "posted_at_epoch": float, "items": {"1": tact_id, ...}}
+        # for the most recently posted numbered list of each kind
+        "pending_map": None,
+        "hidden_map": None,
+    },
 }
 
 
