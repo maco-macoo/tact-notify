@@ -86,7 +86,8 @@ def first_of(d: dict, *keys: str) -> Any:
 def fetch_site_titles(client: SakaiClient, course_only: bool = True) -> dict[str, str]:
     """Site id -> title map. course_only keeps only regular lecture sites
     (type=="course"; the portal's「(不明な学期)」group), excluding project sites
-    like 安全教育/研究科/学生支援 per the user's preference."""
+    like 安全教育/研究科/学生支援. All callers now pass course_only=False —
+    unwanted items are hidden per-item via Slack commands instead (manage.py)."""
     data = client.get_json("/direct/site.json", _limit=300)
     return {
         s["id"]: (s.get("title") or s["id"])

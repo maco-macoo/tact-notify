@@ -3,13 +3,15 @@ exact notification format, without touching state or hitting TACT."""
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 
-from . import config
+from . import config, slack_api
 from .check import _announce_block, _task_block
-from .daily import format_digest
+from .manage import format_pending_list
 from .models import Announcement, Assignment
 from .notify import post
+from .slack_api import SlackApiError
 
 
 def run(dry_run: bool = False) -> None:
@@ -43,7 +45,28 @@ def run(dry_run: bool = False) -> None:
 
     # --- 課題一覧 チャンネル(締切が早い順) ---
     pending = sorted([sample_quiz, sample_assignment], key=lambda a: a.due_time)
-    text = "🧪 これはテスト送信です\n" + format_digest(pending, now)
-    post(config.SLACK_WEBHOOK_DIGEST(), text, dry_run=dry_run)
+    digest_text, _ = format_pending_list(pending, now)
+    post(config.SLACK_WEBHOOK_DIGEST(), "🧪 これはテスト送信です\n" + digest_text, dry_run=dry_run)
 
     print("sent test messages to both channels")
+
+    # --- コマンド管理ボットの疎通(有効時のみ) ---
+    if not slack_api.enabled():
+        print("slack bot: disabled (SLACK_BOT_TOKEN/SLACK_CHANNEL_DIGEST not set)")
+        return
+    if dry_run:
+        slack_api.post_message("🧪 bot疎通テストOK(コマンド管理は有効です)", dry_run=True)
+        print("slack bot: dry-run, skipped live auth/history checks")
+        return
+    try:
+        name = slack_api.auth_check()
+        slack_api.fetch_messages(oldest=time.time() - 60)  # verifies history scope + membership
+        slack_api.post_message("🧪 bot疎通テストOK(コマンド管理は有効です)")
+    except SlackApiError as e:
+        raise SystemExit(
+            f"slack bot NG: {e}\n"
+            "→ missing_scope: OAuth & Permissions でスコープ追加後 Reinstall to Workspace\n"
+            "→ not_in_channel: digestチャンネルに /invite @<bot名>\n"
+            "→ invalid_auth / channel_not_found: SLACK_BOT_TOKEN / SLACK_CHANNEL_DIGEST の値を確認"
+        )
+    print(f"slack bot ok: @{name} (history readable, reply posted)")
