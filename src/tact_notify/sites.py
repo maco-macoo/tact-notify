@@ -113,6 +113,7 @@ def fetch_assignments(
             spent_slow += latency
         prev = float((entry or {}).get("latency") or latency)
         store[sid] = {
+            **(entry or {}),  # keep what other fetchers learned (e.g. "samigo")
             "fetched_at": now.isoformat(timespec="seconds"),
             "latency": round(LATENCY_EWMA * latency + (1 - LATENCY_EWMA) * prev, 2),
             "retry_after": None,
