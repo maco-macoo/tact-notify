@@ -72,6 +72,7 @@ def fetch_assignments(
 
     out: list[Assignment] = []
     attempted = failed = 0
+    spent = spent_slow = 0.0
     last_error: Exception | None = None
     for sid, title in site_titles.items():
         entry = store.get(sid)
@@ -96,6 +97,9 @@ def fetch_assignments(
             out.extend(_defer(store, sid, title, e, now))
             continue
         latency = time.monotonic() - started
+        spent += latency
+        if latency > SLOW_SITE_SEC:
+            spent_slow += latency
         prev = float((entry or {}).get("latency") or latency)
         store[sid] = {
             "fetched_at": now.isoformat(timespec="seconds"),
@@ -109,7 +113,8 @@ def fetch_assignments(
         raise last_error  # every site failed: an outage, not a slow site
     slow = sorted(s for s, e in store.items() if float(e.get("latency") or 0) > SLOW_SITE_SEC)
     print(
-        f"sites: {attempted - failed} fetched, {failed} failed (snapshot kept), "
+        f"sites: {attempted - failed} fetched in {spent:.1f}s (of which expensive sites "
+        f"{spent_slow:.1f}s), {failed} failed (snapshot kept), "
         f"{len(site_titles) - attempted} from snapshot; expensive (hourly): {len(slow)}"
     )
     return out

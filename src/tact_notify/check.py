@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 from . import config, manage, notion, sites, state
@@ -81,12 +82,15 @@ def run(dry_run: bool = False) -> None:
     client = open_session(webhook, dry_run, tolerate_transient=True)
     try:
         with fetch_guard(webhook, dry_run, tolerate_transient=True):
+            t0 = time.monotonic()
             titles = fetch_site_titles(client, course_only=False)
             now = datetime.now(config.JST)
             # commands post a refreshed pending list — needs every site fresh;
             # otherwise expensive sites are served from their snapshot
             assignments = sites.fetch_assignments(client, titles, st, now, full=bool(cmds))
+            t1 = time.monotonic()
             quizzes = fetch_quizzes(client, titles)
+            t2 = time.monotonic()
             announcements = fetch_announcements(client, titles)
             if cmds:
                 # commands post a refreshed pending list — needs accurate submitted
@@ -101,14 +105,18 @@ def run(dry_run: bool = False) -> None:
                     if st["notion"].get(q.id, {}).get("done") is not True
                 }
                 mark_submitted_quizzes(client, quizzes, now, only_sites=open_quiz_sites)
+            print(
+                f"timing: sites+assignments {t1 - t0:.1f}s, quizzes {t2 - t1:.1f}s, "
+                f"announcements+samigo {time.monotonic() - t2:.1f}s"
+            )
     finally:
         client.close()
 
     first_run = not st["assignments"] and not st["quizzes"] and not st["announcements"]
-    # one-time migration whenever the fetch scope changes (course sites only ->
-    # all sites -> per-site endpoint, which also returns every closed item):
-    # the first run sees a pile of old items as "new" — record them without
-    # notifying (like first_run seeding) instead of flooding the channel.
+    # one-time migration to the per-site endpoint, which also returns closed
+    # items the aggregate never listed: on the first run those (new ids whose
+    # due date has passed) are recorded without notifying. Anything still
+    # open is genuinely new and goes through the normal notification path.
     migrate = not first_run and st.get("scope") != "site"
     st["scope"] = "site"
     # an assignment counts as new once it is open: not-yet-open ones stay out
@@ -116,6 +124,10 @@ def run(dry_run: bool = False) -> None:
     # and are announced on the run that first sees them open
     open_assignments = [a for a in assignments if a.is_open(now)]
     new_assignments = [a for a in open_assignments if a.id not in st["assignments"]]
+    backlog: list = []
+    if migrate:
+        backlog = [a for a in new_assignments if a.due_time is None or a.due_time <= now]
+        new_assignments = [a for a in new_assignments if a.due_time is not None and a.due_time > now]
     new_quizzes = [q for q in quizzes if q.id not in st["quizzes"]]
     new_announcements = [n for n in announcements if n.id not in st["announcements"]]
 
@@ -150,12 +162,11 @@ def run(dry_run: bool = False) -> None:
     if migrate:
         post(
             webhook,
-            f"🔧 取得方式を切り替え(サイト別取得): 課題{len(new_assignments)}件・"
-            f"小テスト{len(new_quizzes)}件・お知らせ{len(new_announcements)}件を"
+            f"🔧 取得方式を切り替え(サイト別取得): 締切済みの過去の課題{len(backlog)}件を"
             "通知なしで記録しました。",
             dry_run=dry_run,
         )
-    elif total_new:
+    if total_new:
         blocks: list[dict] = []
         for a in new_tasks[:MAX_ITEMS_PER_RUN]:
             blocks.append(_task_block(a))
@@ -181,17 +192,11 @@ def run(dry_run: bool = False) -> None:
     # st["notion"], so this list is empty and adds no Notion calls. Items hidden
     # via Slack commands are excluded from creation (existing pages untouched).
     pending = [a for a in pending_of(assignments, quizzes, now) if a.id not in st["hidden"]]
-    if migrate:
-        # new_tasks is full of old items here — creating pages for all of them
-        # would flood Notion. Seed only what the digest shows (sync_new skips
-        # ids already tracked).
-        to_create = pending
-    else:
-        unsynced = [
-            a for a in pending
-            if a.id not in st["notion"] and all(a.id != t.id for t in new_tasks)
-        ]
-        to_create = [t for t in new_tasks if t.id not in st["hidden"]] + unsynced
+    unsynced = [
+        a for a in pending
+        if a.id not in st["notion"] and all(a.id != t.id for t in new_tasks)
+    ]
+    to_create = [t for t in new_tasks if t.id not in st["hidden"]] + unsynced
     _notion_sync(to_create, assignments + quizzes, st, dry_run)
 
     if manage.enabled():
