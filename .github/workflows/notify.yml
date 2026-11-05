@@ -14,9 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "check=新着通知 / daily=未提出まとめ"
+        description: "check=新着通知 / daily=未提出まとめ / bench=エンドポイント計測(診断用)"
         type: choice
-        options: [check, daily]
+        options: [check, daily, bench]
         default: check
 
 concurrency:
@@ -26,7 +26,9 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # budget: Playwright login (~5 min worst case) + a slow TACT endpoint with
+    # retries (READ_TIMEOUT_SEC x RETRY_ATTEMPTS, see config.py) + setup
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

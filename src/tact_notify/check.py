@@ -14,7 +14,7 @@ from .sakai import (
     fetch_site_titles,
     mark_submitted_quizzes,
 )
-from .session import open_session
+from .session import fetch_guard, open_session
 
 MAX_ITEMS_PER_RUN = 15  # spam guard if state is ever lost
 
@@ -78,27 +78,28 @@ def run(dry_run: bool = False) -> None:
             print(f"manage: reading commands skipped due to error: {e}")
 
     # check runs every 10 min, so a one-off network blip self-heals on the next
-    # run — tolerate the first transient login failure instead of going red
+    # run — tolerate the first transient login/fetch failure instead of going red
     client = open_session(webhook, dry_run, tolerate_transient=True)
     try:
-        titles = fetch_site_titles(client, course_only=False)
-        assignments = fetch_assignments(client, titles)
-        quizzes = fetch_quizzes(client, titles)
-        announcements = fetch_announcements(client, titles)
-        now = datetime.now(config.JST)
-        if cmds:
-            # commands post a refreshed pending list — needs accurate submitted
-            # flags everywhere (commands are rare, the full sweep is fine)
-            mark_submitted_quizzes(client, quizzes, now)
-        elif notion.enabled():
-            # scrape only sites that still have an open (not done) quiz card,
-            # so the steady-state 10-min run adds no Samigo requests
-            open_quiz_sites = {
-                q.site_id
-                for q in quizzes
-                if st["notion"].get(q.id, {}).get("done") is not True
-            }
-            mark_submitted_quizzes(client, quizzes, now, only_sites=open_quiz_sites)
+        with fetch_guard(webhook, dry_run, tolerate_transient=True):
+            titles = fetch_site_titles(client, course_only=False)
+            assignments = fetch_assignments(client, titles)
+            quizzes = fetch_quizzes(client, titles)
+            announcements = fetch_announcements(client, titles)
+            now = datetime.now(config.JST)
+            if cmds:
+                # commands post a refreshed pending list — needs accurate submitted
+                # flags everywhere (commands are rare, the full sweep is fine)
+                mark_submitted_quizzes(client, quizzes, now)
+            elif notion.enabled():
+                # scrape only sites that still have an open (not done) quiz card,
+                # so the steady-state 10-min run adds no Samigo requests
+                open_quiz_sites = {
+                    q.site_id
+                    for q in quizzes
+                    if st["notion"].get(q.id, {}).get("done") is not True
+                }
+                mark_submitted_quizzes(client, quizzes, now, only_sites=open_quiz_sites)
     finally:
         client.close()
 

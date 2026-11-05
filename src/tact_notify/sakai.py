@@ -8,7 +8,42 @@ from typing import Any
 
 import httpx
 
-from .config import BASE_URL, JST, REQUEST_INTERVAL_SEC, USER_AGENT
+from .config import (
+    BASE_URL,
+    CONNECT_TIMEOUT_SEC,
+    JST,
+    READ_TIMEOUT_SEC,
+    REQUEST_INTERVAL_SEC,
+    RETRY_ATTEMPTS,
+    RETRY_BACKOFF_SEC,
+    USER_AGENT,
+)
+
+
+def transient_kind(e: BaseException) -> str | None:
+    """Failure kind ("timeout" / "unknown", matching session.TRANSIENT_KINDS)
+    for errors a retry or a later run can plausibly fix — timeouts, dropped
+    connections, 5xx — or None for deterministic ones (4xx, malformed JSON)
+    that would only repeat."""
+    if isinstance(e, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(e, httpx.TransportError):
+        return "unknown"
+    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code >= 500:
+        return "unknown"
+    return None
+
+
+def describe_error(e: BaseException) -> str:
+    """'ReadTimeout: The read operation timed out (GET /direct/...)' — the
+    request path matters for the Slack alert, httpx's own message omits it."""
+    first_line = (str(e).splitlines() or [""])[0]  # HTTPStatusError adds an MDN link line
+    text = f"{type(e).__name__}: {first_line}"
+    try:
+        request = e.request  # type: ignore[attr-defined]
+    except (AttributeError, RuntimeError):  # not an httpx error / .request never set
+        return text
+    return f"{text} ({request.method} {request.url.path})"
 
 
 class SakaiClient:
@@ -16,7 +51,7 @@ class SakaiClient:
         self._http = httpx.Client(
             base_url=BASE_URL,
             cookies=cookies,
-            timeout=30,
+            timeout=httpx.Timeout(CONNECT_TIMEOUT_SEC, read=READ_TIMEOUT_SEC),
             headers={"User-Agent": USER_AGENT},
             follow_redirects=True,
         )
@@ -25,23 +60,38 @@ class SakaiClient:
     def close(self) -> None:
         self._http.close()
 
-    def get_json(self, path: str, **params: Any) -> Any:
-        wait = REQUEST_INTERVAL_SEC - (time.monotonic() - self._last_request_at)
-        if wait > 0:
-            time.sleep(wait)
-        resp = self._http.get(path, params=params or None)
-        self._last_request_at = time.monotonic()
-        resp.raise_for_status()
-        return resp.json()
+    def _get(self, path: str, params: dict[str, Any], retry: bool) -> httpx.Response:
+        """Paced GET, retried on transient failures (see transient_kind). GETs
+        are idempotent, so a retry can never duplicate a notification."""
+        attempts = RETRY_ATTEMPTS if retry else 1
+        for attempt in range(1, attempts + 1):
+            wait = REQUEST_INTERVAL_SEC - (time.monotonic() - self._last_request_at)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                resp = self._http.get(path, params=params or None)
+                resp.raise_for_status()
+                return resp
+            except Exception as e:
+                if attempt >= attempts or transient_kind(e) is None:
+                    raise
+                backoff = RETRY_BACKOFF_SEC[min(attempt, len(RETRY_BACKOFF_SEC)) - 1]
+                print(
+                    f"::warning::{describe_error(e)}; "
+                    f"retrying ({attempt}/{attempts - 1}) in {backoff}s"
+                )
+                time.sleep(backoff)
+            finally:
+                self._last_request_at = time.monotonic()
+        raise AssertionError("unreachable")  # the loop always returns or raises
 
-    def get_text(self, path: str, **params: Any) -> str:
-        wait = REQUEST_INTERVAL_SEC - (time.monotonic() - self._last_request_at)
-        if wait > 0:
-            time.sleep(wait)
-        resp = self._http.get(path, params=params or None)
-        self._last_request_at = time.monotonic()
-        resp.raise_for_status()
-        return resp.text
+    def get_json(self, path: str, retry: bool = True, **params: Any) -> Any:
+        """retry=False for probes where a failure is an expected answer (a
+        site without the tool) rather than something worth waiting on."""
+        return self._get(path, params, retry).json()
+
+    def get_text(self, path: str, retry: bool = True, **params: Any) -> str:
+        return self._get(path, params, retry).text
 
     def current_user_eid(self) -> str:
         """Empty string means an anonymous session (login actually failed)."""
@@ -172,7 +222,7 @@ def fetch_quizzes(client: SakaiClient, site_titles: dict[str, str]):
     out: list[Assignment] = []
     for sid, stitle in site_titles.items():
         try:
-            data = client.get_json(f"/direct/sam_pub/context/{sid}.json")
+            data = client.get_json(f"/direct/sam_pub/context/{sid}.json", retry=False)
         except Exception:
             continue  # site without the quiz tool
         for q in data.get("sam_pub_collection", []):

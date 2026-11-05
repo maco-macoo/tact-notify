@@ -26,6 +26,15 @@ COOKIE_PATH = REPO_ROOT / ".runtime" / "cookies.json"
 # Politeness: identify ourselves and pace requests (university asks to avoid load).
 USER_AGENT = "tact-notify/0.1 (student personal notification tool)"
 REQUEST_INTERVAL_SEC = 0.5
+# /direct/assignment/my.json walks every site the user belongs to and has been
+# taking 30s+ on TACT's side since 2026-11-02 (no client change; every check
+# run timed out at the old 30s limit). Reads therefore get a generous budget,
+# and transient failures (timeouts, dropped connections, 5xx) are retried a few
+# times with a short backoff before a run gives up.
+CONNECT_TIMEOUT_SEC = 10
+READ_TIMEOUT_SEC = 90
+RETRY_ATTEMPTS = 3  # total attempts per request
+RETRY_BACKOFF_SEC = (3, 6)  # pause before the 2nd / 3rd attempt
 
 load_dotenv(REPO_ROOT / ".env")
 

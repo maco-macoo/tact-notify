@@ -242,15 +242,16 @@ def run(dry_run: bool = False) -> None:
 
     if cmds:
         from .sakai import fetch_assignments, fetch_quizzes, fetch_site_titles, mark_submitted_quizzes
-        from .session import open_session
+        from .session import fetch_guard, open_session
 
         client = open_session(config.SLACK_WEBHOOK_NOTIFY(), dry_run)
         try:
-            titles = fetch_site_titles(client, course_only=False)
-            assignments = fetch_assignments(client, titles)
-            quizzes = fetch_quizzes(client, titles)
-            now = datetime.now(config.JST)
-            mark_submitted_quizzes(client, quizzes, now)
+            with fetch_guard(config.SLACK_WEBHOOK_NOTIFY(), dry_run):
+                titles = fetch_site_titles(client, course_only=False)
+                assignments = fetch_assignments(client, titles)
+                quizzes = fetch_quizzes(client, titles)
+                now = datetime.now(config.JST)
+                mark_submitted_quizzes(client, quizzes, now)
         finally:
             client.close()
         apply_commands(cmds, newest_ts, st, assignments, quizzes, now, dry_run)

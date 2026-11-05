@@ -13,7 +13,7 @@ from .sakai import (
     fetch_site_titles,
     mark_submitted_quizzes,
 )
-from .session import open_session
+from .session import fetch_guard, open_session
 
 
 def run(dry_run: bool = False) -> None:
@@ -22,11 +22,12 @@ def run(dry_run: bool = False) -> None:
     # login failures alert to the notify channel (the one the user watches for events)
     client = open_session(config.SLACK_WEBHOOK_NOTIFY(), dry_run)
     try:
-        titles = fetch_site_titles(client, course_only=False)
-        assignments = fetch_assignments(client, titles)
-        quizzes = fetch_quizzes(client, titles)
-        now = datetime.now(config.JST)
-        mark_submitted_quizzes(client, quizzes, now)
+        with fetch_guard(config.SLACK_WEBHOOK_NOTIFY(), dry_run):
+            titles = fetch_site_titles(client, course_only=False)
+            assignments = fetch_assignments(client, titles)
+            quizzes = fetch_quizzes(client, titles)
+            now = datetime.now(config.JST)
+            mark_submitted_quizzes(client, quizzes, now)
     finally:
         client.close()
 
