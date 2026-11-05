@@ -31,8 +31,14 @@ def post(webhook_url: str, text: str, blocks: list | None = None, dry_run: bool 
     if blocks:
         payload["blocks"] = blocks
     if dry_run:
-        print("--- DRY RUN Slack payload ---")
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            # public repo: Actions logs are world-readable, so never echo course
+            # or item titles there — just enough to see what would have gone out
+            first = text.splitlines()[0] if text else ""
+            print(f"--- DRY RUN Slack post: {first[:40]!r} ({len(text)} chars, {len(blocks or [])} blocks) ---")
+        else:
+            print("--- DRY RUN Slack payload ---")
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
     # retries= covers connection establishment only, so a delivered-but-slow
     # request is never re-sent (no duplicate messages)

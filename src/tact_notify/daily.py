@@ -7,7 +7,7 @@ from datetime import datetime
 from . import config, manage, notion, sites, state
 from .notify import post
 from .notion_sync import pending_of, sync_done
-from .sakai import fetch_quizzes, fetch_site_titles, mark_submitted_quizzes
+from .sakai import fetch_site_titles, mark_submitted_quizzes
 from .session import fetch_guard, open_session
 
 
@@ -22,7 +22,7 @@ def run(dry_run: bool = False) -> None:
             now = datetime.now(config.JST)
             # the digest wants every site fresh (also re-measures the schedule)
             assignments = sites.fetch_assignments(client, titles, st, now, full=True)
-            quizzes = fetch_quizzes(client, titles)
+            quizzes = sites.fetch_quizzes(client, titles, st, now, full=True)
             mark_submitted_quizzes(client, quizzes, now)
     finally:
         client.close()

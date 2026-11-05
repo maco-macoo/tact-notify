@@ -8,12 +8,7 @@ from datetime import datetime
 from . import config, manage, notion, sites, state
 from .notify import fmt_dt, post
 from .notion_sync import pending_of, sync_done, sync_new
-from .sakai import (
-    fetch_announcements,
-    fetch_quizzes,
-    fetch_site_titles,
-    mark_submitted_quizzes,
-)
+from .sakai import fetch_announcements, fetch_site_titles, mark_submitted_quizzes
 from .session import fetch_guard, open_session
 
 MAX_ITEMS_PER_RUN = 15  # spam guard if state is ever lost
@@ -89,7 +84,7 @@ def run(dry_run: bool = False) -> None:
             # otherwise expensive sites are served from their snapshot
             assignments = sites.fetch_assignments(client, titles, st, now, full=bool(cmds))
             t1 = time.monotonic()
-            quizzes = fetch_quizzes(client, titles)
+            quizzes = sites.fetch_quizzes(client, titles, st, now, full=bool(cmds))
             t2 = time.monotonic()
             announcements = fetch_announcements(client, titles)
             if cmds:

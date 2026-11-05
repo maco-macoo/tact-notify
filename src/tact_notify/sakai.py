@@ -236,37 +236,55 @@ def fetch_announcements(client: SakaiClient, site_titles: dict[str, str]):
     return out
 
 
-def fetch_quizzes(client: SakaiClient, site_titles: dict[str, str]):
-    """Samigo published assessments, per site. Quiz deadlines are separate from
-    assignments. sam_pub carries no usable per-student submission info (its
-    submittedCount stays 0 even after the student submits), so submitted is
-    left None here; daily.py resolves it from the tool page's 提出済みテスト
-    list via fetch_submitted_quiz_titles()."""
+def fetch_site_quizzes(client: SakaiClient, site_id: str, site_title: str):
+    """Samigo published assessments of one site. Quiz deadlines are separate
+    from assignments. sam_pub carries no usable per-student submission info
+    (its submittedCount stays 0 even after the student submits), so submitted
+    is left None here; mark_submitted_quizzes() resolves it from the tool
+    page's 提出済みテスト list. Any failure (typically a site without the
+    quiz tool) yields an empty list."""
     from .models import Assignment
 
+    try:
+        data = client.get_json(f"/direct/sam_pub/context/{site_id}.json", retry=False)
+    except Exception:
+        return []
     out: list[Assignment] = []
-    for sid, stitle in site_titles.items():
-        try:
-            data = client.get_json(f"/direct/sam_pub/context/{sid}.json", retry=False)
-        except Exception:
-            continue  # site without the quiz tool
-        for q in data.get("sam_pub_collection", []):
-            qid = q.get("publishedAssessmentId")
-            if qid is None:
-                continue
-            out.append(
-                Assignment(
-                    id=f"quiz-{qid}",
-                    site_id=sid,
-                    site_title=stitle,
-                    title=str(first_of(q, "title") or "(無題)"),
-                    open_time=parse_time(first_of(q, "startDate")),
-                    due_time=parse_time(first_of(q, "dueDate", "retractDate")),
-                    submitted=None,
-                    kind="quiz",
-                )
+    for q in data.get("sam_pub_collection", []) if isinstance(data, dict) else []:
+        qid = q.get("publishedAssessmentId")
+        if qid is None:
+            continue
+        out.append(
+            Assignment(
+                id=f"quiz-{qid}",
+                site_id=site_id,
+                site_title=site_title,
+                title=str(first_of(q, "title") or "(無題)"),
+                open_time=parse_time(first_of(q, "startDate")),
+                due_time=parse_time(first_of(q, "dueDate", "retractDate")),
+                submitted=None,
+                kind="quiz",
             )
+        )
     return out
+
+
+def fetch_quizzes(client: SakaiClient, site_titles: dict[str, str]):
+    """Quizzes of every site, no caching (sites.fetch_quizzes skips sites
+    known to lack the quiz tool)."""
+    out = []
+    for sid, stitle in site_titles.items():
+        out.extend(fetch_site_quizzes(client, sid, stitle))
+    return out
+
+
+def has_samigo_tool(client: SakaiClient, site_id: str) -> bool | None:
+    """Whether the site has the Tests & Quizzes tool; None when unknown
+    (request failed), so the caller re-checks next time."""
+    try:
+        return _samigo_placement_id(client, site_id) is not None
+    except Exception:
+        return None
 
 
 def mark_submitted_quizzes(

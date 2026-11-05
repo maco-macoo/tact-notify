@@ -242,7 +242,7 @@ def run(dry_run: bool = False) -> None:
 
     if cmds:
         from . import sites
-        from .sakai import fetch_quizzes, fetch_site_titles, mark_submitted_quizzes
+        from .sakai import fetch_site_titles, mark_submitted_quizzes
         from .session import fetch_guard, open_session
 
         client = open_session(config.SLACK_WEBHOOK_NOTIFY(), dry_run)
@@ -251,7 +251,7 @@ def run(dry_run: bool = False) -> None:
                 titles = fetch_site_titles(client, course_only=False)
                 now = datetime.now(config.JST)
                 assignments = sites.fetch_assignments(client, titles, st, now, full=True)
-                quizzes = fetch_quizzes(client, titles)
+                quizzes = sites.fetch_quizzes(client, titles, st, now, full=True)
                 mark_submitted_quizzes(client, quizzes, now)
         finally:
             client.close()

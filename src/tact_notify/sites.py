@@ -20,6 +20,10 @@ Schedule (check runs every 10 min; daily/manage pass full=True):
   attempted site fails does the run itself fail (fetch_guard treats that as
   an outage).
 
+Quizzes (sam_pub per site) are cheap but there is one call per site; a site
+without the Tests & Quizzes tool is detected once (pages.json) and skipped
+until the next full run, which re-checks every site.
+
 Snapshots live in state["sites"] next to the notified-id store, so a cache
 loss just means one full fetch.
 """
@@ -33,7 +37,14 @@ import httpx
 
 from .config import LATENCY_EWMA, SLOW_SITE_INTERVAL_SEC, SLOW_SITE_SEC
 from .models import Assignment
-from .sakai import SakaiClient, describe_error, fetch_site_assignments, transient_kind
+from .sakai import (
+    SakaiClient,
+    describe_error,
+    fetch_site_assignments,
+    fetch_site_quizzes,
+    has_samigo_tool,
+    transient_kind,
+)
 
 
 def _due(entry: dict | None, now: datetime) -> bool:
@@ -128,3 +139,31 @@ def _defer(store: dict, sid: str, title: str, e: Exception, now: datetime) -> li
     retry_after = now.timestamp() + SLOW_SITE_INTERVAL_SEC
     entry["retry_after"] = datetime.fromtimestamp(retry_after, tz=now.tzinfo).isoformat(timespec="seconds")
     return _snapshot(entry, sid, title)
+
+
+def fetch_quizzes(
+    client: SakaiClient,
+    site_titles: dict[str, str],
+    st: dict,
+    now: datetime,
+    full: bool = False,
+) -> list[Assignment]:
+    """Quizzes of every site, skipping sites known to lack the quiz tool
+    (learned once via pages.json; full=True re-checks all of them)."""
+    store: dict = st.setdefault("sites", {})
+    out: list[Assignment] = []
+    skipped = checked = 0
+    for sid, title in site_titles.items():
+        entry = store.setdefault(sid, {"fetched_at": None, "latency": None, "assignments": []})
+        if not full and entry.get("samigo") is False:
+            skipped += 1
+            continue
+        items = fetch_site_quizzes(client, sid, title)
+        if items:
+            entry["samigo"] = True
+        elif full or entry.get("samigo") is None:
+            entry["samigo"] = has_samigo_tool(client, sid)  # None: unknown, re-check
+            checked += 1
+        out.extend(items)
+    print(f"quizzes: {len(site_titles) - skipped} sites polled, {skipped} skipped (no quiz tool), {checked} tool checks")
+    return out

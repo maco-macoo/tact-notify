@@ -26,7 +26,8 @@ _EMPTY = {
     # endpoint, which also returns closed/not-yet-open items). A change is
     # seeded once without notifications (see check.py).
     "scope": "course",
-    # site_id -> {"fetched_at", "latency", "assignments": [Assignment.to_dict()]}
+    # site_id -> {"fetched_at", "latency", "retry_after", "samigo",
+    #             "assignments": [Assignment.to_dict()]}
     # per-site snapshot + schedule (see sites.py)
     "sites": {},
     # tact_id -> {"title", "site_title", "due" (ISO|None), "hidden_at" (ISO)}
