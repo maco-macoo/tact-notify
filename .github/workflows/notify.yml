@@ -14,9 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "check=新着通知 / daily=未提出まとめ / bench=エンドポイント計測(診断用)"
+        description: "check=新着通知 / daily=未提出まとめ / check-dry・daily-dry=投稿も保存もしない試走 / bench=エンドポイント計測"
         type: choice
-        options: [check, daily, bench]
+        options: [check, daily, check-dry, daily-dry, bench]
         default: check
 
 concurrency:
@@ -66,8 +66,14 @@ jobs:
           fi
       - name: Decide mode
         id: mode
-        run: echo "mode=${{ github.event.inputs.mode || 'check' }}" >> "$GITHUB_OUTPUT"
-      - name: Run ${{ steps.mode.outputs.mode }}
+        run: |
+          mode="${{ github.event.inputs.mode || 'check' }}"
+          # *-dry: run the job without posting to Slack/Notion or writing state
+          # (a branch can be exercised against the real TACT without touching
+          # the state the main-branch runs rely on)
+          echo "mode=${mode%-dry}" >> "$GITHUB_OUTPUT"
+          case "$mode" in *-dry) echo "args=--dry-run" >> "$GITHUB_OUTPUT";; esac
+      - name: Run ${{ steps.mode.outputs.mode }} ${{ steps.mode.outputs.args }}
         env:
           MS_EMAIL: ${{ secrets.MS_EMAIL }}
           MS_PASSWORD: ${{ secrets.MS_PASSWORD }}
@@ -78,7 +84,7 @@ jobs:
           NOTION_DS_ID: ${{ secrets.NOTION_DS_ID }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_DIGEST: ${{ secrets.SLACK_CHANNEL_DIGEST }}
-        run: uv run python -m tact_notify ${{ steps.mode.outputs.mode }}
+        run: uv run python -m tact_notify ${{ steps.mode.outputs.mode }} ${{ steps.mode.outputs.args }}
       - name: Encrypt state & session
         if: always()
         env:

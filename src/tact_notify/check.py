@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from . import config, manage, notion, state
+from . import config, manage, notion, sites, state
 from .notify import fmt_dt, post
 from .notion_sync import pending_of, sync_done, sync_new
 from .sakai import (
     fetch_announcements,
-    fetch_assignments,
     fetch_quizzes,
     fetch_site_titles,
     mark_submitted_quizzes,
@@ -83,10 +82,12 @@ def run(dry_run: bool = False) -> None:
     try:
         with fetch_guard(webhook, dry_run, tolerate_transient=True):
             titles = fetch_site_titles(client, course_only=False)
-            assignments = fetch_assignments(client, titles)
+            now = datetime.now(config.JST)
+            # commands post a refreshed pending list — needs every site fresh;
+            # otherwise expensive sites are served from their snapshot
+            assignments = sites.fetch_assignments(client, titles, st, now, full=bool(cmds))
             quizzes = fetch_quizzes(client, titles)
             announcements = fetch_announcements(client, titles)
-            now = datetime.now(config.JST)
             if cmds:
                 # commands post a refreshed pending list — needs accurate submitted
                 # flags everywhere (commands are rare, the full sweep is fine)
@@ -104,17 +105,22 @@ def run(dry_run: bool = False) -> None:
         client.close()
 
     first_run = not st["assignments"] and not st["quizzes"] and not st["announcements"]
-    # one-time migration: the fetch scope used to be course sites only. The
-    # first widened run sees every project-site item as "new" — record them
-    # without notifying (like first_run seeding) instead of flooding the channel.
-    migrate = not first_run and st.get("scope") != "all"
-    st["scope"] = "all"
-    new_assignments = [a for a in assignments if a.id not in st["assignments"]]
+    # one-time migration whenever the fetch scope changes (course sites only ->
+    # all sites -> per-site endpoint, which also returns every closed item):
+    # the first run sees a pile of old items as "new" — record them without
+    # notifying (like first_run seeding) instead of flooding the channel.
+    migrate = not first_run and st.get("scope") != "site"
+    st["scope"] = "site"
+    # an assignment counts as new once it is open: not-yet-open ones stay out
+    # of the notified store (they sit in the site snapshot with their openTime)
+    # and are announced on the run that first sees them open
+    open_assignments = [a for a in assignments if a.is_open(now)]
+    new_assignments = [a for a in open_assignments if a.id not in st["assignments"]]
     new_quizzes = [q for q in quizzes if q.id not in st["quizzes"]]
     new_announcements = [n for n in announcements if n.id not in st["announcements"]]
 
     stamp = state.now_iso()
-    for a in assignments:
+    for a in open_assignments:
         st["assignments"].setdefault(a.id, stamp)
     for q in quizzes:
         st["quizzes"].setdefault(q.id, stamp)
@@ -144,7 +150,7 @@ def run(dry_run: bool = False) -> None:
     if migrate:
         post(
             webhook,
-            f"🔧 対象を全サイトに拡大: 課題{len(new_assignments)}件・"
+            f"🔧 取得方式を切り替え(サイト別取得): 課題{len(new_assignments)}件・"
             f"小テスト{len(new_quizzes)}件・お知らせ{len(new_announcements)}件を"
             "通知なしで記録しました。",
             dry_run=dry_run,
@@ -176,9 +182,9 @@ def run(dry_run: bool = False) -> None:
     # via Slack commands are excluded from creation (existing pages untouched).
     pending = [a for a in pending_of(assignments, quizzes, now) if a.id not in st["hidden"]]
     if migrate:
-        # new_tasks is full of old project-site items here — creating pages for
-        # all of them would flood Notion. Seed only what the digest shows
-        # (sync_new skips ids already tracked).
+        # new_tasks is full of old items here — creating pages for all of them
+        # would flood Notion. Seed only what the digest shows (sync_new skips
+        # ids already tracked).
         to_create = pending
     else:
         unsynced = [

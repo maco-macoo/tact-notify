@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import config
-from .sakai import SakaiClient, describe_error, first_of
+from .sakai import describe_error, first_of
 from .session import open_session
 
 
@@ -119,7 +120,7 @@ def run() -> None:
             sid = s["id"]
             props = s.get("props") if isinstance(s.get("props"), dict) else {}
             term = props.get("term_eid") or props.get("term") or "-"
-            data, dt, err = _timed(lambda: client.get_json(f"/direct/assignment/site/{sid}.json", retry=False))
+            data, dt, err = _timed(lambda sid=sid: client.get_json(f"/direct/assignment/site/{sid}.json", retry=False))
             items = _items(data, "assignment_collection")
             timings.append((dt, sid))
             print(
@@ -130,7 +131,7 @@ def run() -> None:
             )
         print()
         for dt, sid in sorted(timings, reverse=True)[:2]:
-            _, dt2, err = _timed(lambda: client.get_json(f"/direct/assignment/site/{sid}.json", retry=False))
+            _, dt2, err = _timed(lambda sid=sid: client.get_json(f"/direct/assignment/site/{sid}.json", retry=False))
             print(f"re-fetch slowest {_mask(sid)}: first {dt:.1f}s -> again {dt2:.1f}s {err or ''}")
     finally:
         client.close()

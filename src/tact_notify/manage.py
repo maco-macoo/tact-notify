@@ -241,16 +241,17 @@ def run(dry_run: bool = False) -> None:
     print(f"commands: {[(c.verb, c.nums) for c in cmds] or 'none'}")
 
     if cmds:
-        from .sakai import fetch_assignments, fetch_quizzes, fetch_site_titles, mark_submitted_quizzes
+        from . import sites
+        from .sakai import fetch_quizzes, fetch_site_titles, mark_submitted_quizzes
         from .session import fetch_guard, open_session
 
         client = open_session(config.SLACK_WEBHOOK_NOTIFY(), dry_run)
         try:
             with fetch_guard(config.SLACK_WEBHOOK_NOTIFY(), dry_run):
                 titles = fetch_site_titles(client, course_only=False)
-                assignments = fetch_assignments(client, titles)
-                quizzes = fetch_quizzes(client, titles)
                 now = datetime.now(config.JST)
+                assignments = sites.fetch_assignments(client, titles, st, now, full=True)
+                quizzes = fetch_quizzes(client, titles)
                 mark_submitted_quizzes(client, quizzes, now)
         finally:
             client.close()

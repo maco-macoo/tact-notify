@@ -56,6 +56,7 @@ class SakaiClient:
             follow_redirects=True,
         )
         self._last_request_at = 0.0
+        self._user_id: str | None = None
 
     def close(self) -> None:
         self._http.close()
@@ -96,7 +97,15 @@ class SakaiClient:
     def current_user_eid(self) -> str:
         """Empty string means an anonymous session (login actually failed)."""
         data = self.get_json("/direct/session/current.json")
+        self._user_id = (data.get("userId") or "").strip() or None
         return (data.get("userEid") or "").strip()
+
+    @property
+    def user_id(self) -> str:
+        """Internal Sakai user id (what submissions' submitters[].id carries)."""
+        if self._user_id is None:
+            self.current_user_eid()
+        return self._user_id or ""
 
 
 def parse_time(value: Any) -> datetime | None:
@@ -146,10 +155,24 @@ def fetch_site_titles(client: SakaiClient, course_only: bool = True) -> dict[str
     }
 
 
-def _submitted_of(a: dict) -> bool | None:
-    """TACT's my.json contains only the current student's own submissions:
-    an entry with submitted=True + a dateSubmitted means actually turned in
-    (submitted=False would be an unsaved draft)."""
+def _is_own(s: dict, user_id: str) -> bool:
+    """A student only ever sees their own submissions, but in a site where the
+    user can grade (TA) the API returns everyone's — verified on TACT: one
+    site carries ~1,400 submissions, none of them the user's. Match on
+    submitters[].id (= session userId); entries without submitters are
+    assumed own (older payload shape)."""
+    submitters = s.get("submitters")
+    if not user_id or not isinstance(submitters, list) or not submitters:
+        return True
+    return any(
+        str(x.get("id") if isinstance(x, dict) else x) == user_id for x in submitters
+    )
+
+
+def _submitted_of(a: dict, user_id: str) -> bool | None:
+    """True when one of the user's own submissions is actually turned in
+    (submitted=True + a dateSubmitted; submitted=False is an unsaved draft).
+    None when the payload carries no submissions list at all."""
     subs = a.get("submissions")
     if not isinstance(subs, list):
         return None
@@ -157,30 +180,32 @@ def _submitted_of(a: dict) -> bool | None:
         s.get("submitted") is True
         and (s.get("dateSubmittedEpochSeconds") or s.get("dateSubmitted"))
         for s in subs
+        if isinstance(s, dict) and _is_own(s, user_id)
     )
 
 
-def fetch_assignments(client: SakaiClient, site_titles: dict[str, str]):
+def fetch_site_assignments(client: SakaiClient, site_id: str, site_title: str):
+    """All assignments of one site, including not-yet-open and closed ones
+    (unlike my.json, which lists only OPEN/DUE) — callers gate on
+    Assignment.is_open(). Raises httpx errors; sites.py decides per site."""
     from .models import Assignment
 
-    data = client.get_json("/direct/assignment/my.json")
+    user_id = client.user_id
+    data = client.get_json(f"/direct/assignment/site/{site_id}.json")
     out: list[Assignment] = []
-    for a in data.get("assignment_collection", []):
+    for a in data.get("assignment_collection", []) if isinstance(data, dict) else []:
         aid = a.get("id")
-        if not aid:
-            continue
-        sid = str(first_of(a, "context", "siteId") or "")
-        if sid not in site_titles:  # not a target (lecture) site
+        if not aid or a.get("draft") is True:
             continue
         out.append(
             Assignment(
                 id=str(aid),
-                site_id=sid,
-                site_title=site_titles.get(sid, sid),
+                site_id=site_id,
+                site_title=site_title,
                 title=str(first_of(a, "title") or "(無題)"),
                 open_time=parse_time(first_of(a, "openTime", "openDate")),
                 due_time=parse_time(first_of(a, "dueTime", "dueDate", "closeTime")),
-                submitted=_submitted_of(a),
+                submitted=_submitted_of(a, user_id),
             )
         )
     return out

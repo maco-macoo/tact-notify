@@ -35,6 +35,12 @@ CONNECT_TIMEOUT_SEC = 10
 READ_TIMEOUT_SEC = 90
 RETRY_ATTEMPTS = 3  # total attempts per request
 RETRY_BACKOFF_SEC = (3, 6)  # pause before the 2nd / 3rd attempt
+# Per-site schedule (see sites.py): a site whose assignment call averages more
+# than SLOW_SITE_SEC is refreshed by `check` only every SLOW_SITE_INTERVAL_SEC
+# (its last snapshot serves in between); everything else is fetched each run.
+SLOW_SITE_SEC = 5.0
+SLOW_SITE_INTERVAL_SEC = 3600
+LATENCY_EWMA = 0.5  # weight of the latest measurement
 
 load_dotenv(REPO_ROOT / ".env")
 

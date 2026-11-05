@@ -18,13 +18,15 @@ MAX_NOTION_CREATES_PER_RUN = 20  # runaway guard, like check.MAX_ITEMS_PER_RUN
 
 def pending_of(assignments: list, quizzes: list, now: datetime) -> list[Assignment]:
     """Unsubmitted, already-open, due-in-the-future tasks (the daily-digest
-    filter, shared so first-run seeding matches what the digest shows)."""
-    open_quizzes = [q for q in quizzes if q.open_time is None or q.open_time <= now]
+    filter, shared so first-run seeding matches what the digest shows).
+    Per-site fetching also returns not-yet-open assignments, hence the
+    is_open gate for both kinds."""
     return sorted(
         (
             a
-            for a in assignments + open_quizzes
-            if a.due_time is not None and a.due_time > now and a.submitted is not True
+            for a in assignments + quizzes
+            if a.is_open(now)
+            and a.due_time is not None and a.due_time > now and a.submitted is not True
         ),
         key=lambda a: a.due_time,
     )
