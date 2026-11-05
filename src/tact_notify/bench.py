@@ -39,56 +39,73 @@ def _has_submissions(items: list[dict]) -> str:
     return "none" if n == 0 else ("all" if n == len(items) else f"{n}/{len(items)}")
 
 
+def _mask(site_id: str) -> str:
+    """n_2026_256_0123456 -> n_2026_256_####### : keeps the id format/term part
+    (what a scheduler could key on) without naming the course."""
+    parts = site_id.split("_", 3)
+    if len(parts) == 4:
+        parts[3] = "#" * len(parts[3])
+    return "_".join(parts)
+
+
+def _features(items: list[dict]) -> str:
+    """Per-site shape hints for why a call might be slow (never content)."""
+    status = Counter(str(a.get("status") or "?") for a in items)
+    n_group = sum(1 for a in items if str(a.get("access") or "").upper() == "GROUP")
+    n_peer = sum(1 for a in items if a.get("allowPeerAssessment"))
+    n_att = sum(len(a.get("attachments") or []) for a in items)
+    n_subs = sum(len(a.get("submissions") or []) for a in items)
+    sub_att = sum(
+        len(s.get("submittedAttachments") or []) + len(s.get("feedbackAttachments") or [])
+        for a in items for s in (a.get("submissions") or [])
+    )
+    max_text = max((len(str(a.get("instructions") or "")) for a in items), default=0)
+    return (
+        f"status={dict(status)} group={n_group} peer={n_peer} attach={n_att} "
+        f"subs={n_subs} subAttach={sub_att} maxInstr={max_text}"
+    )
+
+
 def run() -> None:
     client = open_session(config.SLACK_WEBHOOK_NOTIFY(), dry_run=True)
-    total = 0.0
     try:
         sites, dt, err = _timed(lambda: client.get_json("/direct/site.json", retry=False, _limit=300))
-        total += dt
         site_list = [s for s in _items(sites, "site_collection") if s.get("id")]
         print(f"site.json            {dt:6.1f}s  {len(site_list)} sites  {err or ''}")
+        if site_list:
+            print(f"  site keys: {sorted(site_list[0].keys())}")
+            props = site_list[0].get("props") or {}
+            print(f"  site props keys: {sorted(props.keys()) if isinstance(props, dict) else type(props).__name__}")
 
         my, dt, err = _timed(lambda: client.get_json("/direct/assignment/my.json", retry=False))
-        total += dt
         my_items = _items(my, "assignment_collection")
         by_ctx = Counter(str(first_of(a, "context", "siteId") or "") for a in my_items)
-        print(
-            f"assignment/my.json   {dt:6.1f}s  {len(my_items)} items in {len(by_ctx)} sites, "
-            f"submissions={_has_submissions(my_items)}  {err or ''}"
-        )
+        print(f"assignment/my.json   {dt:6.1f}s  {len(my_items)} items in {len(by_ctx)} sites  {err or ''}")
+        print(f"  my.json {_features(my_items)}")
         if my_items:
-            print(f"  my.json item keys: {sorted(my_items[0].keys())}")
-
-        ann, dt, err = _timed(lambda: client.get_json("/direct/announcement/user.json", retry=False, n=100, d=30))
-        total += dt
-        print(f"announcement/user    {dt:6.1f}s  {len(_items(ann, 'announcement_collection'))} items  {err or ''}")
+            s0 = next((s for a in my_items for s in (a.get("submissions") or [])), None)
+            if s0:
+                print(f"  submission keys: {sorted(s0.keys())}")
 
         print()
-        print(f"{'site':10} {'type':8} {'asg/site':>9} {'n':>3} {'my':>3} {'subs':>5} {'sam_pub':>8} {'n':>3}")
-        per_site_total = 0.0
-        sam_total = 0.0
-        shown_keys = False
+        print("per-site /direct/assignment/site/{id}.json")
+        timings: list[tuple[float, str]] = []
         for s in site_list:
             sid = s["id"]
+            props = s.get("props") if isinstance(s.get("props"), dict) else {}
+            term = props.get("term_eid") or props.get("term") or "-"
             data, dt, err = _timed(lambda: client.get_json(f"/direct/assignment/site/{sid}.json", retry=False))
-            per_site_total += dt
             items = _items(data, "assignment_collection")
-            if items and not shown_keys:
-                print(f"  assignment/site item keys: {sorted(items[0].keys())}")
-                shown_keys = True
-            sam, sdt, serr = _timed(lambda: client.get_json(f"/direct/sam_pub/context/{sid}.json", retry=False))
-            sam_total += sdt
+            timings.append((dt, sid))
             print(
-                f"{sid[:10]:10} {str(s.get('type') or '-')[:8]:8} {dt:8.1f}s {len(items):3} "
-                f"{by_ctx.get(sid, 0):3} {_has_submissions(items):>5} {sdt:7.1f}s "
-                f"{len(_items(sam, 'sam_pub_collection')):3}"
-                + (f"  asg: {err}" if err else "")
-                + (f"  sam: {serr.split(' (')[0]}" if serr else "")
+                f"{_mask(sid):22} {str(s.get('type') or '-')[:7]:7} term={term!s:12} "
+                f"pub={s.get('published')!s:5} created={str(s.get('createdDate') or s.get('createdTime') or '-')[:10]} "
+                f"{dt:6.1f}s n={len(items):3} my={by_ctx.get(sid, 0):2}  {_features(items)}"
+                + (f"  ERR {err}" if err else "")
             )
         print()
-        print(f"per-site assignment total {per_site_total:6.1f}s over {len(site_list)} sites "
-              f"(+{config.REQUEST_INTERVAL_SEC}s pacing each)")
-        print(f"per-site sam_pub total     {sam_total:6.1f}s")
-        print(f"user-level calls total     {total:6.1f}s")
+        for dt, sid in sorted(timings, reverse=True)[:2]:
+            _, dt2, err = _timed(lambda: client.get_json(f"/direct/assignment/site/{sid}.json", retry=False))
+            print(f"re-fetch slowest {_mask(sid)}: first {dt:.1f}s -> again {dt2:.1f}s {err or ''}")
     finally:
         client.close()
