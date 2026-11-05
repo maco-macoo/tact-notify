@@ -8,7 +8,42 @@ from typing import Any
 
 import httpx
 
-from .config import BASE_URL, JST, REQUEST_INTERVAL_SEC, USER_AGENT
+from .config import (
+    BASE_URL,
+    CONNECT_TIMEOUT_SEC,
+    JST,
+    READ_TIMEOUT_SEC,
+    REQUEST_INTERVAL_SEC,
+    RETRY_ATTEMPTS,
+    RETRY_BACKOFF_SEC,
+    USER_AGENT,
+)
+
+
+def transient_kind(e: BaseException) -> str | None:
+    """Failure kind ("timeout" / "unknown", matching session.TRANSIENT_KINDS)
+    for errors a retry or a later run can plausibly fix — timeouts, dropped
+    connections, 5xx — or None for deterministic ones (4xx, malformed JSON)
+    that would only repeat."""
+    if isinstance(e, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(e, httpx.TransportError):
+        return "unknown"
+    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code >= 500:
+        return "unknown"
+    return None
+
+
+def describe_error(e: BaseException) -> str:
+    """'ReadTimeout: The read operation timed out (GET /direct/...)' — the
+    request path matters for the Slack alert, httpx's own message omits it."""
+    first_line = (str(e).splitlines() or [""])[0]  # HTTPStatusError adds an MDN link line
+    text = f"{type(e).__name__}: {first_line}"
+    try:
+        request = e.request  # type: ignore[attr-defined]
+    except (AttributeError, RuntimeError):  # not an httpx error / .request never set
+        return text
+    return f"{text} ({request.method} {request.url.path})"
 
 
 class SakaiClient:
@@ -16,37 +51,61 @@ class SakaiClient:
         self._http = httpx.Client(
             base_url=BASE_URL,
             cookies=cookies,
-            timeout=30,
+            timeout=httpx.Timeout(CONNECT_TIMEOUT_SEC, read=READ_TIMEOUT_SEC),
             headers={"User-Agent": USER_AGENT},
             follow_redirects=True,
         )
         self._last_request_at = 0.0
+        self._user_id: str | None = None
 
     def close(self) -> None:
         self._http.close()
 
-    def get_json(self, path: str, **params: Any) -> Any:
-        wait = REQUEST_INTERVAL_SEC - (time.monotonic() - self._last_request_at)
-        if wait > 0:
-            time.sleep(wait)
-        resp = self._http.get(path, params=params or None)
-        self._last_request_at = time.monotonic()
-        resp.raise_for_status()
-        return resp.json()
+    def _get(self, path: str, params: dict[str, Any], retry: bool) -> httpx.Response:
+        """Paced GET, retried on transient failures (see transient_kind). GETs
+        are idempotent, so a retry can never duplicate a notification."""
+        attempts = RETRY_ATTEMPTS if retry else 1
+        for attempt in range(1, attempts + 1):
+            wait = REQUEST_INTERVAL_SEC - (time.monotonic() - self._last_request_at)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                resp = self._http.get(path, params=params or None)
+                resp.raise_for_status()
+                return resp
+            except Exception as e:
+                if attempt >= attempts or transient_kind(e) is None:
+                    raise
+                backoff = RETRY_BACKOFF_SEC[min(attempt, len(RETRY_BACKOFF_SEC)) - 1]
+                print(
+                    f"::warning::{describe_error(e)}; "
+                    f"retrying ({attempt}/{attempts - 1}) in {backoff}s"
+                )
+                time.sleep(backoff)
+            finally:
+                self._last_request_at = time.monotonic()
+        raise AssertionError("unreachable")  # the loop always returns or raises
 
-    def get_text(self, path: str, **params: Any) -> str:
-        wait = REQUEST_INTERVAL_SEC - (time.monotonic() - self._last_request_at)
-        if wait > 0:
-            time.sleep(wait)
-        resp = self._http.get(path, params=params or None)
-        self._last_request_at = time.monotonic()
-        resp.raise_for_status()
-        return resp.text
+    def get_json(self, path: str, retry: bool = True, **params: Any) -> Any:
+        """retry=False for probes where a failure is an expected answer (a
+        site without the tool) rather than something worth waiting on."""
+        return self._get(path, params, retry).json()
+
+    def get_text(self, path: str, retry: bool = True, **params: Any) -> str:
+        return self._get(path, params, retry).text
 
     def current_user_eid(self) -> str:
         """Empty string means an anonymous session (login actually failed)."""
         data = self.get_json("/direct/session/current.json")
+        self._user_id = (data.get("userId") or "").strip() or None
         return (data.get("userEid") or "").strip()
+
+    @property
+    def user_id(self) -> str:
+        """Internal Sakai user id (what submissions' submitters[].id carries)."""
+        if self._user_id is None:
+            self.current_user_eid()
+        return self._user_id or ""
 
 
 def parse_time(value: Any) -> datetime | None:
@@ -96,10 +155,24 @@ def fetch_site_titles(client: SakaiClient, course_only: bool = True) -> dict[str
     }
 
 
-def _submitted_of(a: dict) -> bool | None:
-    """TACT's my.json contains only the current student's own submissions:
-    an entry with submitted=True + a dateSubmitted means actually turned in
-    (submitted=False would be an unsaved draft)."""
+def _is_own(s: dict, user_id: str) -> bool:
+    """A student only ever sees their own submissions, but in a site where the
+    user can grade (TA) the API returns everyone's — verified on TACT: one
+    site carries ~1,400 submissions, none of them the user's. Match on
+    submitters[].id (= session userId); entries without submitters are
+    assumed own (older payload shape)."""
+    submitters = s.get("submitters")
+    if not user_id or not isinstance(submitters, list) or not submitters:
+        return True
+    return any(
+        str(x.get("id") if isinstance(x, dict) else x) == user_id for x in submitters
+    )
+
+
+def _submitted_of(a: dict, user_id: str) -> bool | None:
+    """True when one of the user's own submissions is actually turned in
+    (submitted=True + a dateSubmitted; submitted=False is an unsaved draft).
+    None when the payload carries no submissions list at all."""
     subs = a.get("submissions")
     if not isinstance(subs, list):
         return None
@@ -107,30 +180,32 @@ def _submitted_of(a: dict) -> bool | None:
         s.get("submitted") is True
         and (s.get("dateSubmittedEpochSeconds") or s.get("dateSubmitted"))
         for s in subs
+        if isinstance(s, dict) and _is_own(s, user_id)
     )
 
 
-def fetch_assignments(client: SakaiClient, site_titles: dict[str, str]):
+def fetch_site_assignments(client: SakaiClient, site_id: str, site_title: str):
+    """All assignments of one site, including not-yet-open and closed ones
+    (unlike my.json, which lists only OPEN/DUE) — callers gate on
+    Assignment.is_open(). Raises httpx errors; sites.py decides per site."""
     from .models import Assignment
 
-    data = client.get_json("/direct/assignment/my.json")
+    user_id = client.user_id
+    data = client.get_json(f"/direct/assignment/site/{site_id}.json")
     out: list[Assignment] = []
-    for a in data.get("assignment_collection", []):
+    for a in data.get("assignment_collection", []) if isinstance(data, dict) else []:
         aid = a.get("id")
-        if not aid:
-            continue
-        sid = str(first_of(a, "context", "siteId") or "")
-        if sid not in site_titles:  # not a target (lecture) site
+        if not aid or a.get("draft") is True:
             continue
         out.append(
             Assignment(
                 id=str(aid),
-                site_id=sid,
-                site_title=site_titles.get(sid, sid),
+                site_id=site_id,
+                site_title=site_title,
                 title=str(first_of(a, "title") or "(無題)"),
                 open_time=parse_time(first_of(a, "openTime", "openDate")),
                 due_time=parse_time(first_of(a, "dueTime", "dueDate", "closeTime")),
-                submitted=_submitted_of(a),
+                submitted=_submitted_of(a, user_id),
             )
         )
     return out
@@ -161,37 +236,55 @@ def fetch_announcements(client: SakaiClient, site_titles: dict[str, str]):
     return out
 
 
-def fetch_quizzes(client: SakaiClient, site_titles: dict[str, str]):
-    """Samigo published assessments, per site. Quiz deadlines are separate from
-    assignments. sam_pub carries no usable per-student submission info (its
-    submittedCount stays 0 even after the student submits), so submitted is
-    left None here; daily.py resolves it from the tool page's 提出済みテスト
-    list via fetch_submitted_quiz_titles()."""
+def fetch_site_quizzes(client: SakaiClient, site_id: str, site_title: str):
+    """Samigo published assessments of one site. Quiz deadlines are separate
+    from assignments. sam_pub carries no usable per-student submission info
+    (its submittedCount stays 0 even after the student submits), so submitted
+    is left None here; mark_submitted_quizzes() resolves it from the tool
+    page's 提出済みテスト list. Any failure (typically a site without the
+    quiz tool) yields an empty list."""
     from .models import Assignment
 
+    try:
+        data = client.get_json(f"/direct/sam_pub/context/{site_id}.json", retry=False)
+    except Exception:
+        return []
     out: list[Assignment] = []
-    for sid, stitle in site_titles.items():
-        try:
-            data = client.get_json(f"/direct/sam_pub/context/{sid}.json")
-        except Exception:
-            continue  # site without the quiz tool
-        for q in data.get("sam_pub_collection", []):
-            qid = q.get("publishedAssessmentId")
-            if qid is None:
-                continue
-            out.append(
-                Assignment(
-                    id=f"quiz-{qid}",
-                    site_id=sid,
-                    site_title=stitle,
-                    title=str(first_of(q, "title") or "(無題)"),
-                    open_time=parse_time(first_of(q, "startDate")),
-                    due_time=parse_time(first_of(q, "dueDate", "retractDate")),
-                    submitted=None,
-                    kind="quiz",
-                )
+    for q in data.get("sam_pub_collection", []) if isinstance(data, dict) else []:
+        qid = q.get("publishedAssessmentId")
+        if qid is None:
+            continue
+        out.append(
+            Assignment(
+                id=f"quiz-{qid}",
+                site_id=site_id,
+                site_title=site_title,
+                title=str(first_of(q, "title") or "(無題)"),
+                open_time=parse_time(first_of(q, "startDate")),
+                due_time=parse_time(first_of(q, "dueDate", "retractDate")),
+                submitted=None,
+                kind="quiz",
             )
+        )
     return out
+
+
+def fetch_quizzes(client: SakaiClient, site_titles: dict[str, str]):
+    """Quizzes of every site, no caching (sites.fetch_quizzes skips sites
+    known to lack the quiz tool)."""
+    out = []
+    for sid, stitle in site_titles.items():
+        out.extend(fetch_site_quizzes(client, sid, stitle))
+    return out
+
+
+def has_samigo_tool(client: SakaiClient, site_id: str) -> bool | None:
+    """Whether the site has the Tests & Quizzes tool; None when unknown
+    (request failed), so the caller re-checks next time."""
+    try:
+        return _samigo_placement_id(client, site_id) is not None
+    except Exception:
+        return None
 
 
 def mark_submitted_quizzes(

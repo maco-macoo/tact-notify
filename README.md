@@ -190,6 +190,8 @@ uv run python -m tact_notify manage  # チャンネルの hide/show コマンド
   └─ python -m tact_notify {check|daily}
        ├─ auth     Playwright で Microsoft SSO ログイン（TOTP / Shibboleth同意を自動処理）
        ├─ sakai    Sakai /direct REST API から課題・小テスト・お知らせ・講義名を取得
+       ├─ sites    課題はサイト別に取得し、応答の遅いサイト(例: 採点権限があり全員分の提出が返る)は
+       │           1時間ごとの更新+スナップショット再利用に自動で切り替える(集約API my.json は使わない)
        ├─ state    通知済みID（state/seen.json）を Actions キャッシュで永続化（非コミット・暗号化）
        ├─ notion   （任意）課題・小テストをNotion DBへ登録、提出検知で完了化
        ├─ check    新着の差分 → 新着通知 + Notion登録

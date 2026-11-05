@@ -21,9 +21,15 @@ _EMPTY = {
     "quizzes": {},
     # tact_id -> {"page_id": str | None, "done": bool} (Notion sync cache)
     "notion": {},
-    # "course" until the fetch scope was widened to all sites; "all" after the
-    # one-time no-notification seeding of the newly visible sites (see check.py)
+    # how assignments were fetched when this state was last written: "course"
+    # (my.json, course sites), "all" (my.json, all sites), "site" (per-site
+    # endpoint, which also returns closed/not-yet-open items). A change is
+    # seeded once without notifications (see check.py).
     "scope": "course",
+    # site_id -> {"fetched_at", "latency", "retry_after", "samigo",
+    #             "assignments": [Assignment.to_dict()]}
+    # per-site snapshot + schedule (see sites.py)
+    "sites": {},
     # tact_id -> {"title", "site_title", "due" (ISO|None), "hidden_at" (ISO)}
     # — items the user hid from the daily digest via Slack commands (manage.py).
     # Best-effort like the rest of state/: a cache loss just un-hides them.

@@ -4,16 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from . import config, manage, notion, state
+from . import config, manage, notion, sites, state
 from .notify import post
 from .notion_sync import pending_of, sync_done
-from .sakai import (
-    fetch_assignments,
-    fetch_quizzes,
-    fetch_site_titles,
-    mark_submitted_quizzes,
-)
-from .session import open_session
+from .sakai import fetch_site_titles, mark_submitted_quizzes
+from .session import fetch_guard, open_session
 
 
 def run(dry_run: bool = False) -> None:
@@ -22,11 +17,13 @@ def run(dry_run: bool = False) -> None:
     # login failures alert to the notify channel (the one the user watches for events)
     client = open_session(config.SLACK_WEBHOOK_NOTIFY(), dry_run)
     try:
-        titles = fetch_site_titles(client, course_only=False)
-        assignments = fetch_assignments(client, titles)
-        quizzes = fetch_quizzes(client, titles)
-        now = datetime.now(config.JST)
-        mark_submitted_quizzes(client, quizzes, now)
+        with fetch_guard(config.SLACK_WEBHOOK_NOTIFY(), dry_run):
+            titles = fetch_site_titles(client, course_only=False)
+            now = datetime.now(config.JST)
+            # the digest wants every site fresh (also re-measures the schedule)
+            assignments = sites.fetch_assignments(client, titles, st, now, full=True)
+            quizzes = sites.fetch_quizzes(client, titles, st, now, full=True)
+            mark_submitted_quizzes(client, quizzes, now)
     finally:
         client.close()
 

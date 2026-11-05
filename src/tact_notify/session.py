@@ -3,30 +3,33 @@
 Reuses a cached Sakai session cookie when still valid, falling back to a full
 Playwright SSO login otherwise.
 
-Login health is tracked across runs in state/login_health.json (persisted via
-the encrypted Actions cache, like seen.json):
+TACT access health — the login (open_session) and the data fetch that follows
+it (fetch_guard) — is tracked across runs in state/login_health.json
+(persisted via the encrypted Actions cache, like seen.json):
 
 - Transient failures (kind "timeout"/"unknown") are counted. The 10-minute
   check loop tolerates the first one as a soft-fail (warning + exit 0) because
-  the next run self-heals a one-off network blip; only consecutive failures
-  alert and fail the run. Deterministic failures (bad credentials, MFA
-  challenge) always alert immediately.
+  the next run self-heals a one-off network blip or a slow TACT response; only
+  consecutive failures alert and fail the run. Deterministic failures (bad
+  credentials, MFA challenge) always alert immediately.
 - An alert that could not be delivered (the outage that broke the login often
   breaks Slack from the same runner too — see run #1117/#1121) is queued and
   re-sent at the start of a later run, so real outages are never silently lost.
-- Once login works again, a recovery notice is posted if an outage alert had
-  been delivered, and the health file is removed.
+- Once a run gets its data again, a recovery notice is posted if an outage
+  alert had been delivered, and the health file is removed.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import NoReturn
 
 from . import config
 from .auth import LoginError, login
-from .notify import alert_login_failure, post
-from .sakai import SakaiClient
+from .notify import STAGE_LABEL, alert_failure, post
+from .sakai import SakaiClient, describe_error, transient_kind
 from .state import now_iso, write_json_atomic
 
 # Failure kinds a retry on a later run can plausibly fix (network/site outage),
@@ -93,12 +96,14 @@ def _print_best_effort(msg: str) -> None:
         pass  # even a broken stdout must not change the control flow
 
 
-def _alert_best_effort(alert_webhook: str, kind: str, detail: str, dry_run: bool) -> bool:
+def _alert_best_effort(
+    alert_webhook: str, kind: str, detail: str, dry_run: bool, stage: str
+) -> bool:
     """Returns whether the alert was delivered. The alert must never mask the
-    login failure itself (e.g. when the same network outage that broke the
-    login also makes Slack unreachable)."""
+    failure itself (e.g. when the same network outage that broke the login
+    also makes Slack unreachable)."""
     try:
-        alert_login_failure(alert_webhook, kind, detail, dry_run)
+        alert_failure(alert_webhook, kind, detail, dry_run, stage)
         return True
     except Exception as e:
         _print_best_effort(f"::warning::Slack alert delivery failed: {e}")
@@ -111,8 +116,9 @@ def _flush_pending_alert(alert_webhook: str, dry_run: bool, health: dict) -> Non
     pending = health.get("pending_alert")
     if not pending:
         return
+    label = STAGE_LABEL.get(pending.get("stage", "login"), "TACTアクセス失敗")
     text = (
-        f"🚨 TACTログイン失敗(遅延通知: {pending.get('at', '?')} 時点で"
+        f"🚨 {label}(遅延通知: {pending.get('at', '?')} 時点で"
         f"Slackに送信できなかったアラートです)\n"
         f"種別: {pending.get('kind', '?')}\n{pending.get('detail', '')}"
     )
@@ -132,9 +138,16 @@ def _flush_pending_alert(alert_webhook: str, dry_run: bool, health: dict) -> Non
         _print_best_effort("::warning::could not persist login health; the delayed alert may repeat next run")
 
 
-def _fail(
-    kind: str, detail: str, alert_webhook: str, dry_run: bool, tolerate_transient: bool
+def report_failure(
+    kind: str,
+    detail: str,
+    alert_webhook: str,
+    dry_run: bool,
+    tolerate_transient: bool,
+    stage: str = "login",
 ) -> NoReturn:
+    """Record a failed TACT access (stage "login" or "fetch"), alert unless a
+    tolerant caller may still ride out a transient blip, and end the run."""
     health = _load_health()
     if kind in TRANSIENT_KINDS:
         streak = int(health.get("streak", 0)) + 1
@@ -146,21 +159,25 @@ def _fail(
             # forever, so fall through to the normal alert + failure instead.
             if dry_run or _save_health(health):
                 _print_best_effort(
-                    f"::warning::login failed ({kind}); transient failure "
+                    f"::warning::{stage} failed ({kind}); transient failure "
                     f"{streak}/{ALERT_AFTER}, leaving the retry to the next run: {detail}"
                 )
                 raise SystemExit(0)
-    delivered = _alert_best_effort(alert_webhook, kind, detail, dry_run)
+    delivered = _alert_best_effort(alert_webhook, kind, detail, dry_run, stage)
     if not dry_run:  # a dry run must not record alerts it never really sent
         if delivered:
             health["alerted"] = True
         elif "pending_alert" not in health:  # keep the oldest one — it dates the outage
-            health["pending_alert"] = {"kind": kind, "detail": detail, "at": now_iso()}
+            health["pending_alert"] = {
+                "kind": kind, "detail": detail, "at": now_iso(), "stage": stage
+            }
         _save_health(health)
-    raise SystemExit(f"login failed ({kind}): {detail}")
+    raise SystemExit(f"{stage} failed ({kind}): {detail}")
 
 
-def _note_success(alert_webhook: str, dry_run: bool) -> None:
+def note_success(alert_webhook: str, dry_run: bool) -> None:
+    """The run got its data: clear the failure streak and, if an outage had
+    been alerted, post the recovery notice."""
     health = _load_health()
     if not health:
         return
@@ -168,7 +185,7 @@ def _note_success(alert_webhook: str, dry_run: bool) -> None:
     health.pop("last_failure", None)
     if health.get("alerted"):
         try:
-            post(alert_webhook, "✅ TACTログイン復旧: ログインが再び成功しました。", dry_run=dry_run)
+            post(alert_webhook, "✅ TACT復旧: ログインとデータ取得が再び成功しました。", dry_run=dry_run)
             health.pop("alerted", None)
         except Exception as e:  # keep the flag so the next run retries the notice
             _print_best_effort(f"::warning::recovery notice delivery failed: {e}")
@@ -188,19 +205,48 @@ def open_session(
     # 1) try the cached session — fast path, no browser
     client = _valid_client(_load_cached_cookies())
     if client is not None:
-        _note_success(alert_webhook, dry_run)
         return client
 
     # 2) full Playwright SSO login
     try:
         cookies = login(config.MS_EMAIL(), config.MS_PASSWORD(), config.MS_TOTP_SECRET())
     except LoginError as e:
-        _fail(e.kind, str(e), alert_webhook, dry_run, tolerate_transient)
+        report_failure(e.kind, str(e), alert_webhook, dry_run, tolerate_transient)
 
     client = SakaiClient(cookies)
-    if not client.current_user_eid():
+    try:
+        eid = client.current_user_eid()
+    except Exception as e:
         client.close()
-        _fail("unknown", "session is anonymous after login", alert_webhook, dry_run, tolerate_transient)
+        kind = transient_kind(e) or "unknown"
+        report_failure(
+            kind, f"session check failed after login: {describe_error(e)}",
+            alert_webhook, dry_run, tolerate_transient,
+        )
+    if not eid:
+        client.close()
+        report_failure("unknown", "session is anonymous after login", alert_webhook, dry_run, tolerate_transient)
     _save_cached_cookies(cookies)
-    _note_success(alert_webhook, dry_run)
     return client
+
+
+@contextmanager
+def fetch_guard(
+    alert_webhook: str, dry_run: bool = False, tolerate_transient: bool = False
+) -> Iterator[None]:
+    """Wrap the TACT data fetch that follows open_session(). A transient httpx
+    failure (timeout, dropped connection, 5xx — already retried by
+    SakaiClient) goes through the same health tracking and alerting as a login
+    failure, so the 10-minute loop rides out a slow TACT and a persistent
+    outage is alerted; anything else is a bug and propagates. Normal exit
+    records the run's success (streak reset, recovery notice)."""
+    try:
+        yield
+    except Exception as e:
+        kind = transient_kind(e)
+        if kind is None:
+            raise
+        report_failure(
+            kind, describe_error(e), alert_webhook, dry_run, tolerate_transient, stage="fetch"
+        )
+    note_success(alert_webhook, dry_run)

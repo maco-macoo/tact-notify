@@ -10,6 +10,7 @@ def main() -> None:
         p = sub.add_parser(name)
         p.add_argument("--dry-run", action="store_true", help="print payloads, no Slack post / state write")
     sub.add_parser("probe")
+    sub.add_parser("bench", help="time every TACT endpoint per site (no payloads; safe for Actions logs)")
     sub.add_parser("totp", help="print the current TOTP code (for registration / debugging)")
     args = parser.parse_args()
 
@@ -27,6 +28,10 @@ def main() -> None:
         from . import probe
 
         probe.run()
+    elif args.command == "bench":
+        from . import bench
+
+        bench.run()
     elif args.command == "check":
         from . import check
 
